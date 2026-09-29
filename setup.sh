@@ -93,10 +93,40 @@ install_torch() {
 }
 
 install_torch
-python -m pip install -r "$ROOT/requirements.txt"
-# requirements.txt can still swap the torch build. Put the chosen wheel back,
-# then restore numpy and fsspec. The CPU torch index otherwise upgrades numpy
-# past 2.2.x, and lerobot 0.6.1 rejects numpy>=2.3.
+
+# Python 3.13 has no labmaze wheel. Install a same-version placeholder before
+# requirements.txt so pip does not try to compile the Bazel sdist. Python
+# 3.12 installs the real wheel from requirements.txt and skips this.
+if python -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 13) else 1)'; then
+  python -m mimic_arm.ensure_labmaze
+fi
+
+# Keep the torch we just installed. Without this, resolving lerobot can
+# replace it with the PyPI default (currently a CUDA 13 wheel).
+CONSTRAINTS="$(mktemp)"
+python - "$CONSTRAINTS" <<'PY'
+import sys
+from pathlib import Path
+
+import torch
+import torchvision
+
+path = Path(sys.argv[1])
+path.write_text(
+    f"torch=={torch.__version__}\n"
+    f"torchvision=={torchvision.__version__}\n"
+)
+print(
+    f"Constraining torch to {torch.__version__} "
+    f"and torchvision to {torchvision.__version__}"
+)
+PY
+python -m pip install -c "$CONSTRAINTS" -r "$ROOT/requirements.txt"
+rm -f "$CONSTRAINTS"
+# Reinstall the chosen wheel in case a dependency still moved it, then restore
+# the caps the torch wheel index does not honor. LeRobot 0.6.1 requires
+# numpy<2.3 (the CPU/CUDA torch index otherwise leaves numpy 2.5). datasets
+# 4.8.5 requires fsspec<=2026.2.0 (that same index otherwise leaves 2026.7).
 install_torch
 python -m pip install "numpy==2.2.6" "fsspec==2026.2.0"
 

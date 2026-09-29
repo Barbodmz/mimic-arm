@@ -132,7 +132,7 @@ An untrained or barely trained policy should score near 0%. That means the loop 
 
 ## Run it in Colab
 
-Open `notebooks/train_colab.ipynb` (or the badge, once the repo is public). Use a GPU runtime (**T4** is enough). The notebook installs LeRobot without throwing away Colab's CUDA build of PyTorch, trains for **8,000 steps**, evaluates 20 episodes, and plays a video in the page.
+Open `notebooks/train_colab.ipynb` (or the badge, once the repo is public). Use a GPU runtime (**T4** is enough). A fresh free T4 runtime is Python 3.13 with a CUDA build of PyTorch already installed. The notebook writes a constraints file for those exact `torch` and `torchvision` versions, installs LeRobot against it, and prints the full pip log. It trains for **8,000 steps**, evaluates 20 episodes, and plays a video in the page.
 
 Why 8,000 and not 100,000: a free T4 session often dies after a couple of hours, and 100,000 steps is an overnight run. 8,000 steps is long enough to see the loss drop and short enough to finish, with a checkpoint every 2,000 steps so a disconnect does not erase everything. The policy will not be reliable yet. Raise `--steps` if the session is still alive. The loss curve matters more than the success rate at this length.
 
@@ -154,9 +154,10 @@ Measured on a 4-core CPU with no GPU, batch size 2, one camera, OSMesa rendering
 
 ## Gotchas
 
-- **Python 3.12.** LeRobot 0.6.1 will not install on 3.10 or 3.11.
-- **`pip install lerobot` replaces a CPU torch with a CUDA 13 wheel** if you do not install `torch==2.11.0+cpu` first. `setup.sh` does this for you. On Colab, do the opposite: keep Colab's CUDA torch. The notebook does that.
-- **Do not upgrade numpy past 2.2.x.** LeRobot 0.6.1 requires `numpy<2.3`. Installing the CPU torch wheel can pull numpy 2.5; `setup.sh` pins 2.2.6 again.
+- **Python 3.12 or newer.** LeRobot 0.6.1 will not install on 3.10 or 3.11. Local setup is verified on 3.12. Colab's free T4 runtime is 3.13.
+- **`pip install lerobot` replaces a CPU torch with a CUDA 13 wheel** if you do not install `torch==2.11.0+cpu` first. `setup.sh` installs the chosen wheel and passes a constraints file so the requirements install does not swap it. On Colab, do the opposite of a fresh install: keep Colab's CUDA torch. The notebook constrains `torch` and `torchvision` to the versions already imported.
+- **Do not upgrade numpy past 2.2.x, or fsspec past 2026.2.0.** LeRobot 0.6.1 requires `numpy<2.3`. datasets 4.8.5 requires `fsspec<=2026.2.0`. Installing a torch wheel from the PyTorch index can pull numpy 2.5 and fsspec 2026.7; `setup.sh` pins `numpy==2.2.6` and `fsspec==2026.2.0` again afterwards. The Colab install does not pass those pins: the LeRobot and datasets requirements themselves downgrade newer preinstalled copies.
+- **`labmaze` has no Python 3.13 wheel.** It is a `dm-control` dependency, and `gym-aloha` pulls `dm-control` in, but AlohaTransferCube never imports it. On 3.13 the source build needs Bazel and fails. `setup.sh` and the notebook install a pure-Python placeholder of `labmaze==1.0.6` in that case. Python 3.12 still gets the real wheel from `requirements.txt`.
 - **Headless machines need `MUJOCO_GL`.** Without `libosmesa6` (CPU) or `libegl1` (GPU), rendering crashes on import. `setup.sh` installs both.
 - **The output directory must be new.** LeRobot raises `FileExistsError` if `--output-dir` already exists and you are not resuming.
 - **`--policy.push_to_hub` defaults to true inside LeRobot.** `train.py` turns it off unless you pass `--policy.push_to_hub=true` and a `--policy.repo_id`.
@@ -254,6 +255,7 @@ pyproject.toml           project metadata
 train.py                 train ACT on the transfer-cube dataset
 evaluate.py              roll the policy out in AlohaTransferCube
 mimic_arm/mujoco_gl.py   pick EGL or OSMesa before MuJoCo imports
+mimic_arm/ensure_labmaze.py  labmaze placeholder when Python 3.13 has no wheel
 notebooks/train_colab.ipynb
 ```
 

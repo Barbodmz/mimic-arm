@@ -4,6 +4,12 @@
 #   CUDA (selected by pip for lerobot, not run on a GPU in this repo): torch==2.11.0+cu130 torchvision==0.26.0+cu130
 # Install with: bash setup.sh
 #
+# numpy==2.2.6 is inside LeRobot 0.6.1's numpy>=2.0,<2.3. fsspec==2026.2.0 is
+# the top of datasets 4.8.5's fsspec<=2026.2.0 cap. Those pins are not what
+# breaks Python 3.13. labmaze==1.0.6 has no cp313 wheel; on 3.13 setup.sh
+# installs a same-version placeholder first so pip does not build the Bazel
+# sdist. Do not pip-install this file alone on Python 3.13.
+#
 absl-py==2.5.0
 accelerate==1.15.0
 aiohappyeyeballs==2.7.1
