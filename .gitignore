@@ -1,0 +1,10 @@
+.venv/
+outputs/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+wandb/
+*.egg-info/
+.pytest_cache/
+agent-tools/
+.hf_cache/

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=71"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mimic-arm"
+version = "0.1.0"
+description = "Train an ACT imitation-learning policy in the ALOHA simulator with Hugging Face LeRobot."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # The exact working set, including torch, is installed by setup.sh from
+    # requirements.txt. This dependency is the one that matters for the code.
+    "lerobot[training,aloha,evaluation]==0.6.1",
+]
+
+[tool.setuptools.packages.find]
+include = ["mimic_arm*"]
