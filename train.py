@@ -21,11 +21,18 @@ Short run on a laptop CPU::
 Any extra ``--flag=value`` is forwarded to ``lerobot-train``. For example,
 ``--save_freq=2000`` writes a checkpoint every 2,000 steps, and
 ``--env_eval_freq=0`` skips rollouts during training.
+
+Continue a run and stop at a later step. ``--steps`` is the new finish line.
+The checkpoint already knows how far training got::
+
+    python train.py --resume --steps 20000 \\
+        --output-dir outputs/train/act_aloha_transfer_cube --device cuda
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -90,9 +97,84 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Continue training from output-dir/checkpoints/last.",
+        help=(
+            "Continue training from output-dir/checkpoints/last. "
+            "--steps is the new finish line, not a restart."
+        ),
     )
     return parser
+
+
+def _resume_config_path(output_dir: Path) -> Path:
+    """Path to the train_config.json that ``--resume`` should load.
+
+    LeRobot's ``checkpoints/last`` entry is a symlink. Google Drive (and some
+    other network disks) cannot store that symlink, so fall back to the
+    highest numbered checkpoint folder. The numbered folder holds the same
+    ``train_config.json`` and ``training_state``.
+    """
+    checkpoints = output_dir / "checkpoints"
+    last = checkpoints / "last" / "pretrained_model" / "train_config.json"
+    if last.is_file():
+        return last
+
+    numbered: list[Path] = []
+    if checkpoints.is_dir():
+        numbered = sorted(
+            (child for child in checkpoints.iterdir() if child.is_dir() and child.name.isdigit()),
+            key=lambda child: int(child.name),
+        )
+    for child in reversed(numbered):
+        candidate = child / "pretrained_model" / "train_config.json"
+        if candidate.is_file():
+            print(
+                "checkpoints/last is missing, so resume will use the newest "
+                f"numbered checkpoint ({child.name})."
+            )
+            return candidate
+
+    raise SystemExit(
+        f"Cannot resume: no train_config.json under {checkpoints}. "
+        "Train once first, or pass --config_path=... yourself."
+    )
+
+
+def _read_training_step(config_path: Path) -> int | None:
+    """Step stored next to this train_config.json, if the file is there."""
+    step_file = config_path.parent.parent / "training_state" / "training_step.json"
+    if not step_file.is_file():
+        return None
+    data = json.loads(step_file.read_text())
+    if "step" not in data:
+        return None
+    return int(data["step"])
+
+
+def _keep_training_if_last_symlink_fails() -> None:
+    """Let a checkpoint save finish when the disk cannot create ``last``.
+
+    LeRobot creates ``checkpoints/last`` with ``Path.symlink_to`` after the
+    numbered folder is already written. On Google Drive that call raises
+    ``OSError``. The numbered folder is enough for ``train.py --resume``.
+    """
+    import lerobot.common.train_utils as train_utils
+    import lerobot.scripts.lerobot_train as train_script
+
+    original = train_utils.update_last_checkpoint
+
+    def update_last_checkpoint(checkpoint_dir):
+        try:
+            return original(checkpoint_dir)
+        except OSError as exc:
+            print(
+                "Could not create the checkpoints/last shortcut "
+                f"({exc}). The numbered checkpoint folder was still saved. "
+                "python train.py --resume will use the newest numbered folder."
+            )
+            return checkpoint_dir
+
+    train_utils.update_last_checkpoint = update_last_checkpoint
+    train_script.update_last_checkpoint = update_last_checkpoint
 
 
 def _default_device() -> str:
@@ -141,13 +223,19 @@ def main(argv: list[str] | None = None) -> None:
         command.append("--policy.push_to_hub=false")
 
     if args.resume:
-        config_path = (
-            args.output_dir / "checkpoints" / "last" / "pretrained_model" / "train_config.json"
-        )
-        if not config_path.is_file():
+        config_path = _resume_config_path(args.output_dir)
+        saved_step = _read_training_step(config_path)
+        if saved_step is not None and args.steps <= saved_step:
             raise SystemExit(
-                f"Cannot resume: {config_path} does not exist. "
-                "Train once first, or pass --config_path=... yourself."
+                f"This checkpoint is already at step {saved_step}, and --steps is {args.steps}. "
+                "Training would stop immediately. Pass a larger --steps, which is the new "
+                f"finish line (for example --steps {saved_step + 10000})."
+            )
+        if saved_step is not None:
+            print(
+                f"Resuming from step {saved_step}. "
+                f"Training continues until step {args.steps} "
+                f"({args.steps - saved_step} more steps)."
             )
         command.append("--resume=true")
         if not _flag_given(extra, "--config_path"):
@@ -166,6 +254,8 @@ def main(argv: list[str] | None = None) -> None:
     sys.argv = ["lerobot-train", *command]
     from lerobot.scripts.lerobot_train import main as train_main
 
+    if args.resume:
+        _keep_training_if_last_symlink_fails()
     train_main()
 
 

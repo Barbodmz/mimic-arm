@@ -6,6 +6,8 @@ You train an [ACT](https://huggingface.co/docs/lerobot/act) policy (Action Chunk
 
 The published reference policy, trained for 80,000 steps on this same dataset, is [`lerobot/act_aloha_sim_transfer_cube_human`](https://huggingface.co/lerobot/act_aloha_sim_transfer_cube_human). A full training run in this repo uses LeRobot's default ACT settings and aims at 100,000 steps.
 
+**v1.1** adds three tools on top of that loop. `evaluate.py --save-failures` keeps a video of every failed episode and one success. `compare.py` scores several checkpoints on the same episodes and prints a 95% Wilson interval, because 20–50 episodes is a noisy measurement. The Colab notebook can store checkpoints on Google Drive, resume to more steps, and print how many parameters each part of the ACT network has.
+
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Barbodmz/mimic-arm/blob/main/notebooks/train_colab.ipynb)
 
 ## What you are teaching the robot
@@ -79,8 +81,9 @@ Useful shorter commands:
 python train.py --steps 2000 --batch-size 4 --device cpu --num-workers 0 \
     --output-dir outputs/train/act_cpu --save_freq=500 --env_eval_freq=0
 
-# Continue a run that was interrupted.
-python train.py --resume --output-dir outputs/train/act_cpu --device cpu
+# Continue a run that was interrupted. --steps is the new finish line.
+# If the checkpoint is already at step 2000, this trains 18000 more steps.
+python train.py --resume --steps 20000 --output-dir outputs/train/act_cpu --device cpu
 ```
 
 Flags:
@@ -92,7 +95,7 @@ Flags:
 | `--device` | `cuda` if a GPU is visible, else `cpu` | |
 | `--output-dir` | `outputs/train/act_aloha_transfer_cube` | Must be a new folder, unless you pass `--resume` |
 | `--num-workers` | 4 | Data-loading processes. Use `0` if you are low on RAM |
-| `--resume` | off | Continue from `checkpoints/last` in `--output-dir` |
+| `--resume` | off | Continue from `checkpoints/last` in `--output-dir`. `--steps` is the new finish line. If `last` is missing (Google Drive cannot store that shortcut), the newest numbered checkpoint is used |
 
 Anything else is passed straight to LeRobot. `--env_eval_freq=0` turns off rollouts during training (you will evaluate afterwards with `evaluate.py`). `--save_freq=2000` writes extra checkpoints. `--policy.push_to_hub=true --policy.repo_id=YOUR_USER/act_aloha_transfer` uploads them. WandB is off unless you pass `--wandb.enable=true`.
 
@@ -116,17 +119,47 @@ python evaluate.py \
     --device cuda
 ```
 
-It prints a success rate and an average reward, and writes videos plus `eval_info.json` under `outputs/eval/act_aloha_transfer_cube/videos/`.
+It prints a success rate and an average reward, a line per episode (`seed`, success, max reward, sum of rewards), and a count of how far the failures got (0 nothing, 1 touched, 2 lifted, 3 both grippers, 4 success). Videos and `eval_info.json` (including that per-episode table) land under `outputs/eval/act_aloha_transfer_cube/`.
+
+To keep the interesting videos, pass `--save-failures`. That saves every failed episode and at most one success, with names like `episode_07_fail_maxreward1.mp4` and `episode_03_success.mp4`. LeRobot itself always renders the first N episodes, before it knows which ones failed, so this flag renders all of them and deletes the extra successes.
+
+```bash
+python evaluate.py \
+    --checkpoint outputs/train/act_aloha_transfer_cube/checkpoints/last/pretrained_model \
+    --episodes 50 \
+    --save-failures \
+    --device cuda
+```
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--checkpoint` | required | Local path or Hub model id |
 | `--episodes` | 20 | Simulated episodes |
-| `--videos` | 2 | How many of those episodes to save as mp4 |
+| `--videos` | 2 | How many of those episodes to save as mp4. Ignored when `--save-failures` is set |
+| `--save-failures` | off | Save every failed episode and one success |
 | `--batch-size` | 1 | Parallel simulators. Leave this at 1 on CPU |
 | `--device` | auto | `cuda` or `cpu` |
 | `--output-dir` | `outputs/eval/act_aloha_transfer_cube` | Videos and `eval_info.json` |
 | `--seed` | 1000 | Seed of the first episode |
+
+### Compare checkpoints
+
+```bash
+python compare.py --train-dir outputs/train/act_aloha_transfer_cube --episodes 20 --device cuda
+```
+
+That evaluates every numbered checkpoint (not the `last` shortcut a second time) with the same seeds. It prints step, success rate, and average max reward, plus a 95% Wilson interval, and writes `outputs/eval/compare/compare.csv`.
+
+Pass a list instead of a training directory:
+
+```bash
+python compare.py \
+    --checkpoints outputs/train/act_aloha_transfer_cube/checkpoints/002000 \
+                  outputs/train/act_aloha_transfer_cube/checkpoints/008000 \
+    --episodes 20
+```
+
+20–50 episodes is a small sample. Read the interval before deciding that one checkpoint is better.
 
 An untrained or barely trained policy should score near 0%. That means the loop works and the policy has not learned the task yet. The reference Hub checkpoint is the one that actually transfers the cube (the model card reports results on 500 episodes; community re-runs on newer LeRobot builds have landed lower, often around 40–70%).
 
@@ -134,7 +167,14 @@ An untrained or barely trained policy should score near 0%. That means the loop 
 
 Open `notebooks/train_colab.ipynb` (or the badge, once the repo is public). Use a GPU runtime (**T4** is enough). A fresh free T4 runtime is Python 3.13 with a CUDA build of PyTorch already installed. The notebook writes a constraints file for those exact `torch` and `torchvision` versions, installs LeRobot against it, and prints the full pip log. It trains for **8,000 steps**, evaluates 20 episodes, and plays a video in the page.
 
-Why 8,000 and not 100,000: a free T4 session often dies after a couple of hours, and 100,000 steps is an overnight run. 8,000 steps is long enough to see the loss drop and short enough to finish, with a checkpoint every 2,000 steps so a disconnect does not erase everything. The policy will not be reliable yet. Raise `--steps` if the session is still alive. The loss curve matters more than the success rate at this length.
+Why 8,000 and not 100,000: a free T4 session often dies after a couple of hours, and 100,000 steps is an overnight run. 8,000 steps is long enough to see the loss drop and short enough to finish, with a checkpoint every 2,000 steps so a disconnect does not erase everything. The policy will not be reliable yet. The loss curve matters more than the success rate at this length.
+
+The notebook has four extra sections after that first run:
+
+- **Google Drive** (off unless you set `SAVE_TO_DRIVE = True`). Mounts Drive and points `outputs/train` at a folder there, so checkpoints survive a disconnect. In a new session, run the install cells and this cell again before you resume.
+- **Train longer**. Sets `TOTAL_STEPS = 20000` and runs `train.py --resume` on the same output directory, then evaluates 50 episodes with `--save-failures` and plays the failure videos.
+- **Look inside the network**. Loads the checkpoint and prints parameter counts for the ResNet backbone, transformer encoder, decoder, VAE encoder, and the input/output projections, plus the ACT config values.
+- **Compare checkpoints**. Runs `compare.py` over the numbered checkpoints.
 
 ## Expected runtimes
 
@@ -254,8 +294,11 @@ requirements.txt         pinned Python packages (torch installed separately)
 pyproject.toml           project metadata
 train.py                 train ACT on the transfer-cube dataset
 evaluate.py              roll the policy out in AlohaTransferCube
+compare.py               score several checkpoints on the same episodes
 mimic_arm/mujoco_gl.py   pick EGL or OSMesa before MuJoCo imports
 mimic_arm/ensure_labmaze.py  labmaze placeholder when Python 3.13 has no wheel
+mimic_arm/checkpoints.py find a pretrained_model folder or list step checkpoints
+mimic_arm/act_summary.py parameter counts for a trained ACT policy
 notebooks/train_colab.ipynb
 ```
 

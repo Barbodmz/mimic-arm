@@ -11,12 +11,23 @@ step is 0, 1, 2, 3, or 4 depending on how far the hand-off has gotten. The
 "average reward" printed here is the average of the *sum* of rewards over an
 episode, which is what LeRobot reports as ``avg_sum_reward``.
 
+``--save-failures`` keeps a video of every episode that did not succeed, plus
+one success for comparison. LeRobot 0.6.1 can only render the first N
+episodes (it decides before it knows the outcome), so this flag renders every
+episode and then deletes the extra success videos.
+
 Examples
 --------
 Evaluate a checkpoint this repo just trained, for the default 20 episodes::
 
     python evaluate.py \\
         --checkpoint outputs/train/act_aloha_transfer_cube/checkpoints/last/pretrained_model
+
+Save every failed episode (and one success) from a 50-episode run::
+
+    python evaluate.py \\
+        --checkpoint outputs/train/act_aloha_transfer_cube/checkpoints/last/pretrained_model \\
+        --episodes 50 --save-failures --device cuda
 
 Smoke test (a couple of episodes is enough to see that the loop works)::
 
@@ -42,49 +53,20 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from mimic_arm.checkpoints import checkpoint_step, resolve_checkpoint
 from mimic_arm.mujoco_gl import configure_mujoco_rendering
 
 ENV_TASK = "AlohaTransferCube-v0"
 
-
-def resolve_checkpoint(checkpoint: str) -> str:
-    """Return a folder (or Hub id) that contains ``config.json``.
-
-    Accepted inputs:
-
-    * a Hub id such as ``lerobot/act_aloha_sim_transfer_cube_human``
-    * a ``pretrained_model`` directory
-    * a step directory such as ``checkpoints/000200``
-    * a training output directory (the latest checkpoint is used)
-    """
-    path = Path(checkpoint)
-    if not path.exists():
-        # Not a local folder, so treat it as a Hub model id. LeRobot downloads
-        # config.json and model.safetensors when the policy is built.
-        return checkpoint
-
-    candidates: list[Path] = [
-        path,
-        path / "pretrained_model",
-        path / "checkpoints" / "last" / "pretrained_model",
-    ]
-    checkpoint_root = path / "checkpoints"
-    if checkpoint_root.is_dir():
-        numbered = sorted(
-            (child for child in checkpoint_root.iterdir() if child.is_dir() and child.name.isdigit()),
-            key=lambda child: int(child.name),
-        )
-        if numbered:
-            candidates.append(numbered[-1] / "pretrained_model")
-
-    for candidate in candidates:
-        if (candidate / "config.json").is_file():
-            return str(candidate)
-
-    raise SystemExit(
-        f"No policy config.json under {path}. Pass a pretrained_model directory, "
-        "a training output directory, or a Hugging Face model id."
-    )
+# gym-aloha's transfer-cube reward. The max over an episode says how far the
+# hand-off got, even when the episode is not a success.
+REWARD_STAGES = (
+    (0, "nothing"),
+    (1, "touched"),
+    (2, "lifted"),
+    (3, "both grippers"),
+    (4, "success"),
+)
 
 
 def _json_ready(value):
@@ -97,6 +79,146 @@ def _json_ready(value):
     if isinstance(value, Path):
         return str(value)
     raise TypeError(f"Not JSON serializable: {type(value)!r}")
+
+
+def reward_stage(max_reward: float) -> int:
+    """Integer stage closest to an episode's maximum reward."""
+    return int(round(float(max_reward)))
+
+
+def format_reward(value: float) -> str:
+    """Print 1 instead of 1.000 when the reward is a whole number."""
+    number = float(value)
+    rounded = round(number)
+    if abs(number - rounded) < 1e-6:
+        return str(int(rounded))
+    return f"{number:.3f}"
+
+
+def per_episode_rows(info: dict, start_seed: int) -> list[dict]:
+    """One row per episode: seed, success, max_reward, sum_reward.
+
+    ``eval_policy`` in LeRobot 0.6.1 records those four fields, but
+    ``eval_policy_all`` only keeps three lists on each task: ``successes``,
+    ``max_rewards``, and ``sum_rewards``. Seeds are dropped there. Episode i
+    still used seed ``start_seed + i``, because the evaluator hands out seeds
+    in that order and only discards the unused tail of the last batch.
+    """
+    tasks = info.get("per_task") or []
+    if not tasks:
+        raise RuntimeError(
+            "eval_policy_all did not return per-task results, so this script "
+            "cannot build the per-episode table."
+        )
+
+    rows: list[dict] = []
+    for task in tasks:
+        metrics = task.get("metrics") or {}
+        successes = list(metrics.get("successes") or [])
+        max_rewards = list(metrics.get("max_rewards") or [])
+        sum_rewards = list(metrics.get("sum_rewards") or [])
+        seeds = list(metrics.get("seeds") or [])
+        count = min(len(successes), len(max_rewards), len(sum_rewards))
+        for index in range(count):
+            if index < len(seeds) and seeds[index] is not None:
+                seed = int(seeds[index])
+            else:
+                seed = start_seed + index
+            rows.append(
+                {
+                    "episode": len(rows),
+                    "seed": seed,
+                    "success": bool(successes[index]),
+                    "max_reward": float(max_rewards[index]),
+                    "sum_reward": float(sum_rewards[index]),
+                }
+            )
+    return rows
+
+
+def stage_table(rows: list[dict]) -> list[dict]:
+    """Count episodes by the furthest reward stage they reached."""
+    counts = {stage: 0 for stage, _label in REWARD_STAGES}
+    extra: dict[int, int] = {}
+    for row in rows:
+        stage = reward_stage(row["max_reward"])
+        if stage in counts:
+            counts[stage] += 1
+        else:
+            extra[stage] = extra.get(stage, 0) + 1
+    table = [
+        {"stage": stage, "label": label, "count": counts[stage]}
+        for stage, label in REWARD_STAGES
+    ]
+    for stage in sorted(extra):
+        table.append({"stage": stage, "label": "other", "count": extra[stage]})
+    return table
+
+
+def format_episode_line(row: dict) -> str:
+    outcome = "success" if row["success"] else "fail"
+    return (
+        f"episode {row['episode']:02d}  seed {row['seed']}  {outcome:7}  "
+        f"max_reward {format_reward(row['max_reward'])}  "
+        f"sum_reward {row['sum_reward']:.3f}"
+    )
+
+
+def format_stage_report(table: list[dict]) -> str:
+    lines = ["Failures by max reward stage:"]
+    for row in table:
+        lines.append(f"  {row['stage']} {row['label']}: {row['count']}")
+    return "\n".join(lines)
+
+
+def failure_video_name(row: dict) -> str:
+    """File name for one episode video, for example ``episode_07_fail_maxreward1.mp4``."""
+    episode = f"{row['episode']:02d}"
+    if row["success"]:
+        return f"episode_{episode}_success.mp4"
+    stage = reward_stage(row["max_reward"])
+    return f"episode_{episode}_fail_maxreward{stage}.mp4"
+
+
+def _rendered_video(videos_dir: Path, episode_index: int) -> Path | None:
+    """Find LeRobot's ``eval_episode_<index>.mp4`` for one episode."""
+    name = f"eval_episode_{episode_index}.mp4"
+    matches = sorted(videos_dir.rglob(name))
+    if not matches:
+        return None
+    return matches[0]
+
+
+def organize_failure_videos(videos_dir: Path, rows: list[dict]) -> list[str]:
+    """Rename rendered videos and keep every failure plus one success.
+
+    LeRobot always writes ``eval_episode_0.mp4``, ``eval_episode_1.mp4``, ...
+    in episode order. It has no switch for "only the failures", so the caller
+    renders every episode and this function does the selection afterwards.
+    """
+    kept: list[str] = []
+    saved_success = False
+    for row in rows:
+        source = _rendered_video(videos_dir, row["episode"])
+        if source is None:
+            print(f"No video file for episode {row['episode']:02d}.")
+            continue
+        if row["success"] and saved_success:
+            source.unlink()
+            continue
+        if row["success"]:
+            saved_success = True
+        destination = videos_dir / failure_video_name(row)
+        if destination.exists() and destination.resolve() != source.resolve():
+            destination.unlink()
+        if destination.resolve() != source.resolve():
+            source.rename(destination)
+        kept.append(str(destination))
+
+    for child in list(videos_dir.iterdir()):
+        if child.is_dir() and not any(child.iterdir()):
+            child.rmdir()
+    return kept
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -119,7 +241,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--videos",
         type=int,
         default=2,
-        help="How many of those episodes to save as mp4. Default: 2.",
+        help="How many of those episodes to save as mp4. Default: 2. Ignored with --save-failures.",
+    )
+    parser.add_argument(
+        "--save-failures",
+        action="store_true",
+        help=(
+            "Save a video of every failed episode and at most one success. "
+            "Names look like episode_07_fail_maxreward1.mp4 and episode_03_success.mp4."
+        ),
     )
     parser.add_argument(
         "--batch-size",
@@ -143,32 +273,61 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> None:
+def evaluate_checkpoint(
+    checkpoint: str,
+    *,
+    episodes: int,
+    videos: int,
+    batch_size: int,
+    device: str | None,
+    output_dir: Path,
+    seed: int,
+    save_failures: bool,
+) -> dict:
+    """Run ``episodes`` rollouts and write ``eval_info.json``. Returns a summary."""
     configure_mujoco_rendering()
-    args = build_parser().parse_args(argv)
 
-    if args.episodes < 1:
+    if episodes < 1:
         raise SystemExit("--episodes must be at least 1.")
-    if args.videos < 0:
+    if videos < 0:
         raise SystemExit("--videos cannot be negative.")
-    if args.batch_size < 1:
+    if batch_size < 1:
         raise SystemExit("--batch-size must be at least 1.")
 
     import torch
 
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    if device == "cuda" and not torch.cuda.is_available():
+    chosen_device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if chosen_device == "cuda" and not torch.cuda.is_available():
         print("CUDA was requested, but this machine has no visible GPU. Using cpu.")
-        device = "cpu"
+        chosen_device = "cpu"
 
-    policy_path = resolve_checkpoint(args.checkpoint)
-    videos_to_save = min(args.videos, args.episodes)
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    videos_dir = args.output_dir / "videos"
+    policy_path = resolve_checkpoint(checkpoint)
+    # Selective rendering is not available: max_episodes_rendered always saves
+    # the first N episodes, before anyone knows which ones failed. Render all
+    # of them when the caller asked to keep the failures.
+    if save_failures:
+        videos_to_save = episodes
+    else:
+        videos_to_save = min(videos, episodes)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    videos_dir = output_dir / "videos"
+    if videos_to_save and videos_dir.exists():
+        for old_video in videos_dir.rglob("*.mp4"):
+            old_video.unlink()
 
     print("Checkpoint:", policy_path)
+    step = checkpoint_step(policy_path)
+    if step is not None:
+        print("Step:", step)
     print("Task:", ENV_TASK)
-    print(f"Episodes: {args.episodes}    videos saved: {videos_to_save}    device: {device}")
+    if save_failures:
+        print(
+            f"Episodes: {episodes}    videos: every failure, plus one success    "
+            f"device: {chosen_device}"
+        )
+    else:
+        print(f"Episodes: {episodes}    videos saved: {videos_to_save}    device: {chosen_device}")
 
     # Imports stay below the renderer setup. Importing lerobot pulls in
     # gym-aloha, which imports MuJoCo.
@@ -181,16 +340,16 @@ def main(argv: list[str] | None = None) -> None:
     from lerobot.utils.utils import init_logging
 
     init_logging()
-    set_seed(args.seed)
+    set_seed(seed)
 
     policy_cfg = PreTrainedConfig.from_pretrained(policy_path)
     policy_cfg.pretrained_path = Path(policy_path)
-    policy_cfg.device = device
+    policy_cfg.device = chosen_device
 
     env_cfg = AlohaEnv(task=ENV_TASK)
     # One simulator at a time unless the student asks for more. Async envs
     # fork extra processes, which is painful on a small CPU machine.
-    envs = make_env(env_cfg, n_envs=args.batch_size, use_async_envs=args.batch_size > 1)
+    envs = make_env(env_cfg, n_envs=batch_size, use_async_envs=batch_size > 1)
 
     started = time.perf_counter()
     try:
@@ -203,7 +362,7 @@ def main(argv: list[str] | None = None) -> None:
         preprocessor, postprocessor = make_pre_post_processors(
             policy_cfg=policy_cfg,
             pretrained_path=str(policy_cfg.pretrained_path),
-            preprocessor_overrides={"device_processor": {"device": device}},
+            preprocessor_overrides={"device_processor": {"device": chosen_device}},
         )
         env_preprocessor, env_postprocessor = make_env_pre_post_processors(env_cfg, policy_cfg)
 
@@ -215,10 +374,10 @@ def main(argv: list[str] | None = None) -> None:
                 env_postprocessor=env_postprocessor,
                 preprocessor=preprocessor,
                 postprocessor=postprocessor,
-                n_episodes=args.episodes,
+                n_episodes=episodes,
                 max_episodes_rendered=videos_to_save,
                 videos_dir=videos_dir if videos_to_save else None,
-                start_seed=args.seed,
+                start_seed=seed,
                 max_parallel_tasks=1,
             )
     finally:
@@ -226,26 +385,77 @@ def main(argv: list[str] | None = None) -> None:
 
     elapsed = time.perf_counter() - started
     overall = info["overall"]
+    rows = per_episode_rows(info, seed)
+    if len(rows) != episodes:
+        raise RuntimeError(
+            f"Expected {episodes} per-episode results, got {len(rows)}."
+        )
+    stages = stage_table(rows)
+
+    if save_failures:
+        video_paths = organize_failure_videos(videos_dir, rows)
+    else:
+        video_paths = [str(path) for path in overall.get("video_paths") or []]
+
+    overall["video_paths"] = video_paths
+    info["per_episode"] = rows
+    info["failure_stage_counts"] = stages
+
+    info_path = output_dir / "eval_info.json"
+    info_path.write_text(json.dumps(info, indent=2, default=_json_ready))
+
     success_rate = float(overall["pc_success"])
     avg_reward = float(overall["avg_sum_reward"])
-    video_paths = [str(path) for path in overall.get("video_paths", [])]
-
-    info_path = args.output_dir / "eval_info.json"
-    info_path.write_text(json.dumps(info, indent=2, default=_json_ready))
+    avg_max_reward = float(overall["avg_max_reward"])
+    n_success = sum(1 for row in rows if row["success"])
 
     # The lines a student (and the smoke test) should be able to find.
     print()
-    print(f"Success rate: {success_rate:.1f}%  ({args.episodes} episodes)")
+    print(f"Success rate: {success_rate:.1f}%  ({episodes} episodes)")
     print(f"Average reward: {avg_reward:.3f}")
-    print(f"Average max reward: {float(overall['avg_max_reward']):.3f}")
+    print(f"Average max reward: {avg_max_reward:.3f}")
     print(f"Runtime: {elapsed:.1f}s")
+    print()
+    print("Per episode:")
+    for row in rows:
+        print(f"  {format_episode_line(row)}")
+    print()
+    print(format_stage_report(stages))
     if video_paths:
         print("Videos:")
         for path in video_paths:
             print(f"  {path}")
     else:
-        print("Videos: none (pass --videos 1 or more to save mp4s)")
+        print("Videos: none (pass --videos 1 or more, or --save-failures)")
     print(f"Wrote {info_path}")
+
+    return {
+        "checkpoint": policy_path,
+        "step": step,
+        "episodes": episodes,
+        "successes": n_success,
+        "success_rate": success_rate,
+        "avg_sum_reward": avg_reward,
+        "avg_max_reward": avg_max_reward,
+        "per_episode": rows,
+        "video_paths": video_paths,
+        "output_dir": str(output_dir),
+        "seed": seed,
+    }
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
+    evaluate_checkpoint(
+        args.checkpoint,
+        episodes=args.episodes,
+        videos=args.videos,
+        batch_size=args.batch_size,
+        device=args.device,
+        output_dir=args.output_dir,
+        seed=args.seed,
+        save_failures=args.save_failures,
+    )
 
 
 if __name__ == "__main__":
