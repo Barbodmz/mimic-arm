@@ -169,7 +169,7 @@ Open `notebooks/train_colab.ipynb` (or the badge above). Use a GPU runtime (**T4
 
 The **Get the training scripts** cell clones the repo. Colab only downloads the notebook, so that clone is what training actually runs. `MIMIC_ARM_REF` in that cell chooses the branch or tag. It is `"main"` unless you change it. Opening the notebook from some other link does not switch the clone by itself. The environment variable `MIMIC_ARM_REF` overrides the line in the cell.
 
-To reproduce the baseline, open the [v1-baseline notebook](https://colab.research.google.com/github/Barbodmz/mimic-arm/blob/v1-baseline/notebooks/train_colab.ipynb) and set `MIMIC_ARM_REF = "v1-baseline"`. That tag is commit `23c9b01`. It stays where it is. The variable lives in **Get the training scripts**: Colab does not clone the tag just because that was the link you opened.
+To reproduce the baseline, open the notebook from [main](https://colab.research.google.com/github/Barbodmz/mimic-arm/blob/main/notebooks/train_colab.ipynb), set `MIMIC_ARM_REF = "v1-baseline"`, then run the install, get-scripts, train, and 20-episode eval cells. The notebook saved at tag `v1-baseline` (commit `23c9b01`) predates `MIMIC_ARM_REF`, so that copy has no variable to set. The newer cells (resume, `--save-failures` eval, compare, Drive) need main's scripts and won't work on `v1-baseline`.
 
 Why 8,000 and not 100,000: a free T4 session often dies after a couple of hours, and 100,000 steps is an overnight run. 8,000 steps is long enough to see the loss drop and short enough to finish, with a checkpoint every 2,000 steps so a disconnect does not erase everything. The policy will not be reliable yet. The loss curve matters more than the success rate at this length.
 
