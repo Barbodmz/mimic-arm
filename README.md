@@ -145,6 +145,13 @@ python evaluate.py \
 | `--device` | auto | `cuda` or `cpu` |
 | `--output-dir` | `outputs/eval/act_aloha_transfer_cube` | Videos and `eval_info.json` |
 | `--seed` | 1000 | Seed of the first episode |
+| `--temporal-ensemble` | off | ACT ensemble coefficient, for example `0.01`. Sets `n_action_steps` to 1 |
+| `--cube-range` | `default` | `outside` places the cube in a 5 cm frame around the training rectangle |
+| `--cube-x`, `--cube-y` | off | Explicit cube ranges, `LO HI` in meters. Pass both |
+
+`--temporal-ensemble 0.01` is the coefficient from the ACT paper. The checkpoint is loaded with that value and `n_action_steps=1`, which is what LeRobot's ACT config requires. The network then runs on every simulator step instead of once per chunk of 100, and the ensemble state is cleared at the start of each episode. On this CPU, a normal 1-episode eval took 40.6 s. The same kind of run with `--temporal-ensemble 0.01` took 146.5 s and 143.4 s for 2 episodes (about 72 s each), 1.8 times as long per episode. The coefficient is printed and stored in `eval_info.json`. `compare.py` adds a `temporal_ensemble_coeff` column when you pass the flag.
+
+`--cube-range outside` moves the cube off the rectangle that gym-aloha's `sample_box_pose` uses: x from 0.0 to 0.2, y from 0.4 to 0.6, z fixed at 0.05. The outside range is a 5 cm frame around that rectangle, x from -0.05 to 0.25 and y from 0.35 to 0.65, skipping any sample that still falls inside. Five centimeters is far enough to leave the demonstrations, and the cube still sits on the table in view of the top camera. In the simulator those positions keep their x,y after the cube drops, rest at about z 0.02, and show a few hundred red pixels, like a cube inside the training rectangle. The far corner of the frame is about 0.73 m from the left arm base; the far corner of the training rectangle is already about 0.68 m, and the right arm is closer than that to every point in the frame. The same seed always picks the same spot, so two checkpoints see the same cubes. Each episode line includes that cube x, y. `--cube-x LO HI --cube-y LO HI` samples a rectangle you name instead. Leave both options off and the evaluation output matches a normal run.
 
 ### Compare checkpoints
 
@@ -152,7 +159,7 @@ python evaluate.py \
 python compare.py --train-dir outputs/train/act_aloha_transfer_cube --episodes 20 --device cuda
 ```
 
-That evaluates every numbered checkpoint (not the `last` shortcut a second time) with the same seeds. It prints step, success rate, and average max reward, plus a 95% Wilson interval, and writes `outputs/eval/compare/compare.csv`.
+That evaluates every numbered checkpoint (not the `last` shortcut a second time) with the same seeds. It prints step, success rate, and average max reward, plus a 95% Wilson interval, and writes `outputs/eval/compare/compare.csv`. `compare.py` takes the same `--temporal-ensemble`, `--cube-range`, `--cube-x`, and `--cube-y` flags. When you pass them, the CSV gains a column for each one you turned on.
 
 Pass a list instead of a training directory:
 

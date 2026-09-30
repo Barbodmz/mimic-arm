@@ -35,7 +35,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from evaluate import evaluate_checkpoint
+from evaluate import add_eval_variant_args, evaluate_checkpoint
 from mimic_arm.checkpoints import checkpoint_step, list_numbered_checkpoints, resolve_checkpoint
 
 
@@ -100,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Where compare.csv and each checkpoint's eval_info.json are written.",
     )
     parser.add_argument("--seed", type=int, default=1000, help="Seed of the first episode. Default: 1000.")
+    add_eval_variant_args(parser)
     return parser
 
 
@@ -113,7 +114,7 @@ def _checkpoint_list(args: argparse.Namespace) -> list[str]:
     raise SystemExit("Pass --train-dir or --checkpoints. See compare.py --help.")
 
 
-def _write_csv(path: Path, rows: list[dict]) -> None:
+def _write_csv(path: Path, rows: list[dict], extra_fields: list[str] | None = None) -> None:
     fieldnames = [
         "step",
         "checkpoint",
@@ -125,6 +126,8 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
         "wilson95_low_percent",
         "wilson95_high_percent",
     ]
+    if extra_fields:
+        fieldnames.extend(extra_fields)
     with path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -132,7 +135,7 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
             writer.writerow({key: row[key] for key in fieldnames})
 
 
-def _print_table(rows: list[dict]) -> None:
+def _print_table(rows: list[dict], extra_fields: list[str] | None = None) -> None:
     print()
     print(
         "Note: 20-50 episodes is a small sample, so these success rates have wide "
@@ -140,18 +143,24 @@ def _print_table(rows: list[dict]) -> None:
         "true success rate. A few extra successes can move a row a lot."
     )
     print()
+    extra_fields = extra_fields or []
     header = (
         f"{'step':>8}  {'success rate':>13}  {'avg max reward':>15}  {'95% Wilson interval':>22}"
     )
+    for field in extra_fields:
+        header += f"  {field}"
     print(header)
     print("-" * len(header))
     for row in rows:
         step = "n/a" if row["step"] == "" else str(row["step"])
-        print(
+        line = (
             f"{step:>8}  {row['success_rate_percent']:12.1f}%  "
             f"{row['avg_max_reward']:15.3f}  "
             f"[{row['wilson95_low_percent']:5.1f}%, {row['wilson95_high_percent']:5.1f}%]"
         )
+        for field in extra_fields:
+            line += f"  {row[field]}"
+        print(line)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -165,6 +174,14 @@ def main(argv: list[str] | None = None) -> None:
         f"Comparing {len(checkpoints)} checkpoint(s) on {args.episodes} episodes "
         f"(seeds {args.seed} through {last_seed})."
     )
+    extra_fields: list[str] = []
+    if args.temporal_ensemble is not None:
+        extra_fields.append("temporal_ensemble_coeff")
+        print(f"Temporal ensemble coefficient: {float(args.temporal_ensemble):g}")
+    custom_cube = args.cube_range != "default" or args.cube_x is not None or args.cube_y is not None
+    if custom_cube:
+        extra_fields.append("cube_range")
+        print(f"Cube range: {args.cube_range}")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     table_rows: list[dict] = []
@@ -184,27 +201,37 @@ def main(argv: list[str] | None = None) -> None:
             output_dir=args.output_dir / folder_name,
             seed=args.seed,
             save_failures=False,
+            temporal_ensemble=args.temporal_ensemble,
+            cube_range=args.cube_range,
+            cube_x=None if args.cube_x is None else (args.cube_x[0], args.cube_x[1]),
+            cube_y=None if args.cube_y is None else (args.cube_y[0], args.cube_y[1]),
         )
         low, high = wilson_interval(summary["successes"], summary["episodes"])
-        table_rows.append(
-            {
-                "step": "" if summary["step"] is None else summary["step"],
-                "checkpoint": summary["checkpoint"],
-                "episodes": summary["episodes"],
-                "successes": summary["successes"],
-                "success_rate_percent": summary["success_rate"],
-                "avg_max_reward": summary["avg_max_reward"],
-                "avg_sum_reward": summary["avg_sum_reward"],
-                "wilson95_low_percent": low * 100.0,
-                "wilson95_high_percent": high * 100.0,
-                "_sort": summary["step"] if summary["step"] is not None else 10**12,
-            }
-        )
+        row = {
+            "step": "" if summary["step"] is None else summary["step"],
+            "checkpoint": summary["checkpoint"],
+            "episodes": summary["episodes"],
+            "successes": summary["successes"],
+            "success_rate_percent": summary["success_rate"],
+            "avg_max_reward": summary["avg_max_reward"],
+            "avg_sum_reward": summary["avg_sum_reward"],
+            "wilson95_low_percent": low * 100.0,
+            "wilson95_high_percent": high * 100.0,
+            "_sort": summary["step"] if summary["step"] is not None else 10**12,
+        }
+        if args.temporal_ensemble is not None:
+            row["temporal_ensemble_coeff"] = summary["temporal_ensemble_coeff"]
+        if custom_cube:
+            sampling = summary["cube_sampling"]
+            row["cube_range"] = (
+                f"{sampling['mode']} x{sampling['x']} y{sampling['y']}"
+            )
+        table_rows.append(row)
 
     table_rows.sort(key=lambda row: row["_sort"])
-    _print_table(table_rows)
+    _print_table(table_rows, extra_fields or None)
     csv_path = args.output_dir / "compare.csv"
-    _write_csv(csv_path, table_rows)
+    _write_csv(csv_path, table_rows, extra_fields or None)
     print()
     print(f"Wrote {csv_path}")
 

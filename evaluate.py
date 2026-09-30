@@ -47,6 +47,7 @@ import argparse
 import json
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -54,6 +55,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from mimic_arm.checkpoints import checkpoint_step, resolve_checkpoint
+from mimic_arm.cube_pose import cube_sampling_record, install_cube_sampler, resolve_cube_sampler
 from mimic_arm.mujoco_gl import configure_mujoco_rendering
 
 ENV_TASK = "AlohaTransferCube-v0"
@@ -157,11 +159,14 @@ def stage_table(rows: list[dict]) -> list[dict]:
 
 def format_episode_line(row: dict) -> str:
     outcome = "success" if row["success"] else "fail"
-    return (
+    line = (
         f"episode {row['episode']:02d}  seed {row['seed']}  {outcome:7}  "
         f"max_reward {format_reward(row['max_reward'])}  "
         f"sum_reward {row['sum_reward']:.3f}"
     )
+    if "cube_x" in row:
+        line += f"  cube ({row['cube_x']:.3f}, {row['cube_y']:.3f})"
+    return line
 
 
 def format_stage_report(table: list[dict]) -> str:
@@ -270,7 +275,55 @@ def build_parser() -> argparse.ArgumentParser:
         help="Where videos and eval_info.json are written.",
     )
     parser.add_argument("--seed", type=int, default=1000, help="First episode seed. LeRobot's default is 1000.")
+    add_eval_variant_args(parser)
     return parser
+
+
+def add_eval_variant_args(parser: argparse.ArgumentParser) -> None:
+    """Flags that change evaluation only. Both default off.
+
+    ``compare.py`` adds the same flags so a table can use them. Leaving them
+    off keeps the previous evaluation path.
+    """
+    parser.add_argument(
+        "--temporal-ensemble",
+        type=float,
+        default=None,
+        metavar="COEFF",
+        help=(
+            "ACT temporal-ensemble coefficient, for example 0.01 (the ACT paper). "
+            "Off by default. Sets n_action_steps to 1, so the network runs every "
+            "simulator step. Much slower than the normal action chunk."
+        ),
+    )
+    parser.add_argument(
+        "--cube-range",
+        choices=("default", "outside"),
+        default="default",
+        help=(
+            "Where the red cube starts. 'default' is gym-aloha's sample_box_pose "
+            "(x 0.0-0.2, y 0.4-0.6). 'outside' is a 5 cm frame around that rectangle."
+        ),
+    )
+    parser.add_argument(
+        "--cube-x",
+        nargs=2,
+        type=float,
+        metavar=("LO", "HI"),
+        help="Explicit cube x range in meters. Pass with --cube-y.",
+    )
+    parser.add_argument(
+        "--cube-y",
+        nargs=2,
+        type=float,
+        metavar=("LO", "HI"),
+        help="Explicit cube y range in meters. Pass with --cube-x.",
+    )
+
+
+def _finite(value: float) -> bool:
+    number = float(value)
+    return number == number and number not in (float("inf"), float("-inf"))
 
 
 def evaluate_checkpoint(
@@ -283,6 +336,10 @@ def evaluate_checkpoint(
     output_dir: Path,
     seed: int,
     save_failures: bool,
+    temporal_ensemble: float | None = None,
+    cube_range: str = "default",
+    cube_x: tuple[float, float] | None = None,
+    cube_y: tuple[float, float] | None = None,
 ) -> dict:
     """Run ``episodes`` rollouts and write ``eval_info.json``. Returns a summary."""
     configure_mujoco_rendering()
@@ -329,11 +386,36 @@ def evaluate_checkpoint(
     else:
         print(f"Episodes: {episodes}    videos saved: {videos_to_save}    device: {chosen_device}")
 
+    try:
+        sampler = resolve_cube_sampler(cube_range, cube_x, cube_y)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    cube_record = cube_sampling_record(sampler, cube_range) if sampler is not None else None
+    if temporal_ensemble is not None and not _finite(temporal_ensemble):
+        raise SystemExit("--temporal-ensemble must be a finite number, for example 0.01.")
+    if temporal_ensemble is not None:
+        print(
+            f"Temporal ensemble: coefficient {float(temporal_ensemble):g}, "
+            "n_action_steps 1. The network runs every step. "
+            "The ensembler resets at the start of each episode."
+        )
+    if cube_record is not None:
+        print(
+            f"Cube positions: {cube_record['mode']}  "
+            f"x {cube_record['x']}  y {cube_record['y']}"
+            + (
+                "  (training rectangle excluded)"
+                if cube_record["exclude_default"]
+                else ""
+            )
+        )
+
     # Imports stay below the renderer setup. Importing lerobot pulls in
     # gym-aloha, which imports MuJoCo.
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.envs import close_envs, make_env, make_env_pre_post_processors
     from lerobot.envs.configs import AlohaEnv
+    from lerobot.policies.act.configuration_act import ACTConfig
     from lerobot.policies import make_policy, make_pre_post_processors
     from lerobot.scripts.lerobot_eval import eval_policy_all
     from lerobot.utils.random_utils import set_seed
@@ -345,43 +427,71 @@ def evaluate_checkpoint(
     policy_cfg = PreTrainedConfig.from_pretrained(policy_path)
     policy_cfg.pretrained_path = Path(policy_path)
     policy_cfg.device = chosen_device
+    if temporal_ensemble is not None:
+        if not isinstance(policy_cfg, ACTConfig):
+            raise SystemExit("--temporal-ensemble applies to ACT checkpoints only.")
+        # ACTConfig requires n_action_steps == 1 whenever temporal_ensemble_coeff
+        # is set. __post_init__ already ran on the saved config, so run it again
+        # after these two fields change.
+        policy_cfg.temporal_ensemble_coeff = float(temporal_ensemble)
+        policy_cfg.n_action_steps = 1
+        policy_cfg.__post_init__()
 
     env_cfg = AlohaEnv(task=ENV_TASK)
     # One simulator at a time unless the student asks for more. Async envs
     # fork extra processes, which is painful on a small CPU machine.
-    envs = make_env(env_cfg, n_envs=batch_size, use_async_envs=batch_size > 1)
+    # A custom cube sampler is installed in this process, so those envs stay
+    # synchronous too. Otherwise the worker processes would keep gym-aloha's sampler.
+    use_async_envs = batch_size > 1 and sampler is None
+    if sampler is not None and batch_size > 1:
+        print("Cube sampling runs in this process, so the simulators are not async.")
 
-    started = time.perf_counter()
-    try:
-        policy = make_policy(cfg=policy_cfg, env_cfg=env_cfg)
-        policy.eval()
+    # nullcontext leaves gym-aloha's sample_box_pose in place.
+    cube_patch = nullcontext() if sampler is None else install_cube_sampler(sampler)
+    with cube_patch:
+        envs = make_env(env_cfg, n_envs=batch_size, use_async_envs=use_async_envs)
 
-        # The saved processor pipeline normalizes images and moves tensors
-        # onto the device. Override the device so a checkpoint trained on a
-        # GPU still evaluates on CPU (and the other way around).
-        preprocessor, postprocessor = make_pre_post_processors(
-            policy_cfg=policy_cfg,
-            pretrained_path=str(policy_cfg.pretrained_path),
-            preprocessor_overrides={"device_processor": {"device": chosen_device}},
-        )
-        env_preprocessor, env_postprocessor = make_env_pre_post_processors(env_cfg, policy_cfg)
+        started = time.perf_counter()
+        try:
+            policy = make_policy(cfg=policy_cfg, env_cfg=env_cfg)
+            policy.eval()
+            if temporal_ensemble is not None:
+                # lerobot_eval.rollout calls policy.reset() before every episode.
+                # For ACT that clears ACTTemporalEnsembler. Check the object exists
+                # and that reset actually empties it before the first episode.
+                ensembler = getattr(policy, "temporal_ensembler", None)
+                if ensembler is None:
+                    raise SystemExit("Temporal ensembling did not attach to this policy.")
+                policy.reset()
+                if ensembler.ensembled_actions is not None:
+                    raise SystemExit("The temporal ensembler did not reset.")
 
-        with torch.no_grad():
-            info = eval_policy_all(
-                envs=envs,
-                policy=policy,
-                env_preprocessor=env_preprocessor,
-                env_postprocessor=env_postprocessor,
-                preprocessor=preprocessor,
-                postprocessor=postprocessor,
-                n_episodes=episodes,
-                max_episodes_rendered=videos_to_save,
-                videos_dir=videos_dir if videos_to_save else None,
-                start_seed=seed,
-                max_parallel_tasks=1,
+            # The saved processor pipeline normalizes images and moves tensors
+            # onto the device. Override the device so a checkpoint trained on a
+            # GPU still evaluates on CPU (and the other way around).
+            preprocessor, postprocessor = make_pre_post_processors(
+                policy_cfg=policy_cfg,
+                pretrained_path=str(policy_cfg.pretrained_path),
+                preprocessor_overrides={"device_processor": {"device": chosen_device}},
             )
-    finally:
-        close_envs(envs)
+            env_preprocessor, env_postprocessor = make_env_pre_post_processors(env_cfg, policy_cfg)
+
+            with torch.no_grad():
+                info = eval_policy_all(
+                    envs=envs,
+                    policy=policy,
+                    env_preprocessor=env_preprocessor,
+                    env_postprocessor=env_postprocessor,
+                    preprocessor=preprocessor,
+                    postprocessor=postprocessor,
+                    n_episodes=episodes,
+                    max_episodes_rendered=videos_to_save,
+                    videos_dir=videos_dir if videos_to_save else None,
+                    start_seed=seed,
+                    max_parallel_tasks=1,
+                )
+        finally:
+            close_envs(envs)
 
     elapsed = time.perf_counter() - started
     overall = info["overall"]
@@ -391,6 +501,14 @@ def evaluate_checkpoint(
             f"Expected {episodes} per-episode results, got {len(rows)}."
         )
     stages = stage_table(rows)
+    if sampler is not None:
+        for row in rows:
+            position = sampler.positions.get(row["seed"])
+            if position is None:
+                raise RuntimeError(
+                    f"No cube position was recorded for episode seed {row['seed']}."
+                )
+            row["cube_x"], row["cube_y"] = position
 
     if save_failures:
         video_paths = organize_failure_videos(videos_dir, rows)
@@ -400,6 +518,11 @@ def evaluate_checkpoint(
     overall["video_paths"] = video_paths
     info["per_episode"] = rows
     info["failure_stage_counts"] = stages
+    if temporal_ensemble is not None:
+        info["temporal_ensemble_coeff"] = float(temporal_ensemble)
+        info["n_action_steps"] = 1
+    if cube_record is not None:
+        info["cube_sampling"] = cube_record
 
     info_path = output_dir / "eval_info.json"
     info_path.write_text(json.dumps(info, indent=2, default=_json_ready))
@@ -441,6 +564,8 @@ def evaluate_checkpoint(
         "video_paths": video_paths,
         "output_dir": str(output_dir),
         "seed": seed,
+        "temporal_ensemble_coeff": None if temporal_ensemble is None else float(temporal_ensemble),
+        "cube_sampling": cube_record,
     }
 
 
@@ -455,6 +580,10 @@ def main(argv: list[str] | None = None) -> None:
         output_dir=args.output_dir,
         seed=args.seed,
         save_failures=args.save_failures,
+        temporal_ensemble=args.temporal_ensemble,
+        cube_range=args.cube_range,
+        cube_x=None if args.cube_x is None else (args.cube_x[0], args.cube_x[1]),
+        cube_y=None if args.cube_y is None else (args.cube_y[0], args.cube_y[1]),
     )
 
 
