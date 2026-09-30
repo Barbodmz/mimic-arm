@@ -1,8 +1,10 @@
 """Pick a headless MuJoCo renderer before MuJoCo is imported.
 
 gym-aloha renders with MuJoCo. On a machine with a GPU, EGL talks to the
-GPU. On a CPU-only machine (this project's smoke test, many laptops, a
-Colab runtime that lost its GPU) OSMesa draws frames in software.
+GPU. On a CPU-only Linux machine (this project's smoke test, a Colab
+runtime that lost its GPU) OSMesa draws frames in software. On Windows the
+default is glfw, because the Linux libraries this probe looks for are not
+there and OSMesa does not work.
 
 MuJoCo reads the ``MUJOCO_GL`` environment variable at import time, so
 call :func:`configure_mujoco_rendering` before importing ``lerobot`` or
@@ -14,6 +16,7 @@ from __future__ import annotations
 import ctypes
 import os
 import shutil
+import sys
 from pathlib import Path
 
 
@@ -38,9 +41,13 @@ def configure_mujoco_rendering() -> str:
     if chosen:
         return chosen
 
-    # Prefer the GPU renderer when a GPU and libEGL are both present.
-    # Otherwise fall back to OSMesa, which needs no display and no GPU.
-    if _has_nvidia_gpu() and _library_loads("libEGL.so.1"):
+    # Windows has neither libEGL.so.1 nor libOSMesa.so.8, so the Linux probe
+    # would select osmesa, which MuJoCo cannot use there. glfw is the
+    # backend that works for evaluation. Linux and macOS keep the probe:
+    # EGL when a GPU and libEGL are present, otherwise OSMesa.
+    if sys.platform == "win32":
+        chosen = "glfw"
+    elif _has_nvidia_gpu() and _library_loads("libEGL.so.1"):
         chosen = "egl"
     elif _library_loads("libOSMesa.so.8"):
         chosen = "osmesa"

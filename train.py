@@ -154,8 +154,11 @@ def _keep_training_if_last_symlink_fails() -> None:
     """Let a checkpoint save finish when the disk cannot create ``last``.
 
     LeRobot creates ``checkpoints/last`` with ``Path.symlink_to`` after the
-    numbered folder is already written. On Google Drive that call raises
-    ``OSError``. The numbered folder is enough for ``train.py --resume``.
+    numbered folder is already written. That call raises ``OSError`` on
+    Google Drive, and on Windows without permission to create a symlink
+    (WinError 1314). The numbered folder is enough for ``train.py --resume``.
+    This has to run on a fresh training start as well as ``--resume``: the
+    crash happens on the first checkpoint save, before any resume.
     """
     import lerobot.common.train_utils as train_utils
     import lerobot.scripts.lerobot_train as train_script
@@ -254,8 +257,10 @@ def main(argv: list[str] | None = None) -> None:
     sys.argv = ["lerobot-train", *command]
     from lerobot.scripts.lerobot_train import main as train_main
 
-    if args.resume:
-        _keep_training_if_last_symlink_fails()
+    # Every save, including the first one on a fresh run, tries to create
+    # checkpoints/last. Catch that failure here so training does not die
+    # after the numbered checkpoint is already on disk.
+    _keep_training_if_last_symlink_fails()
     train_main()
 
 

@@ -59,12 +59,16 @@ bash setup.sh          # or: bash setup.sh --cpu   /   bash setup.sh --cuda
 source .venv/bin/activate
 ```
 
-`setup.sh` installs OSMesa and EGL, creates `.venv`, and installs the pinned packages. The scripts set `MUJOCO_GL` themselves (`egl` when an NVIDIA GPU is present, `osmesa` otherwise). To force one:
+`setup.sh` installs OSMesa and EGL, creates `.venv`, and installs the pinned packages. The scripts set `MUJOCO_GL` themselves (`egl` when an NVIDIA GPU is present, `osmesa` otherwise; `glfw` on Windows). To force one:
 
 ```bash
 export MUJOCO_GL=osmesa   # CPU software rendering
 export MUJOCO_GL=egl      # GPU
 ```
+
+### Windows
+
+Training keeps going if Windows cannot create the `checkpoints/last` symlink (WinError 1314, which happens without Developer Mode or an admin account). The numbered checkpoint is still saved, and `--resume` uses the newest numbered folder when `last` is missing. Evaluation defaults to `MUJOCO_GL=glfw`. A `MUJOCO_GL` value you set yourself is kept. Linux still picks `egl`, then `osmesa`.
 
 ### Train
 
