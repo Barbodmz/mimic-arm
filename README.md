@@ -237,7 +237,7 @@ Change `--env.type` and `--env.task` to the simulator you actually recorded. ACT
 
 ### Move to a real SO-101
 
-The SO-101 is a low-cost follower arm (Feetech motors) that you drive with a matching leader arm. Same idea as this project: record demonstrations, train ACT, run the policy. The hardware steps, from the current LeRobot docs:
+The SO-101 is a low-cost follower arm (Feetech motors) that you drive with a matching leader arm. Same idea as this project: record demonstrations, train ACT, run the policy. The stock parts and the servo fit-test print are in [`hardware/`](hardware/README.md). The hardware steps, from the current LeRobot docs:
 
 1. Install the hardware extras: `pip install 'lerobot[feetech,core_scripts]'`.
 2. Find the USB ports (`lerobot-find-port`), give each motor an id (`lerobot-setup-motors`), and calibrate (`lerobot-calibrate`).

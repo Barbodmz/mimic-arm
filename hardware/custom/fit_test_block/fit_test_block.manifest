@@ -1,0 +1,10 @@
+{
+  "autodeskProduct": "Fusion",
+  "type": "script",
+  "author": "Barbod",
+  "description": {
+    "": "Parametric STS3215 fit-test block. One servo pocket plus M2, M3, slot, and peg samples at 0.1, 0.2, and 0.3 mm clearance."
+  },
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}
