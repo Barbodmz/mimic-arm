@@ -68,7 +68,11 @@ export MUJOCO_GL=egl      # GPU
 
 ### Windows
 
-Training keeps going if Windows cannot create the `checkpoints/last` symlink (WinError 1314, which happens without Developer Mode or an admin account). The numbered checkpoint is still saved, and `--resume` uses the newest numbered folder when `last` is missing. Evaluation defaults to `MUJOCO_GL=glfw`. A `MUJOCO_GL` value you set yourself is kept. Linux still picks `egl`, then `osmesa`.
+Training keeps going if Windows cannot create the `checkpoints/last` symlink (WinError 1314, which happens without Developer Mode or an admin account). The real checkpoint is the directory `checkpoints/recovery`, not that shortcut. Rerunning the same `train.py` command resumes from it. Older runs that only have numbered folders still resume from the newest of those when `recovery` is missing. Evaluation defaults to `MUJOCO_GL=glfw`. A `MUJOCO_GL` value you set yourself is kept. Linux still picks `egl`, then `osmesa`.
+
+`--num-workers` defaults to 1 on Windows and 4 elsewhere. Each Windows worker is a fresh process that imports PyTorch again, and that commit charge counts against RAM plus the page file.
+
+A 60k run on a 6 GB laptop can still die with Windows error 1455 ("The paging file is too small for this operation to complete") even when the checkpoint itself fits. `train.py` cannot raise that limit. If a run dies with 1455, set a larger page file and reboot: Settings, System, About, Advanced system settings, Performance, Settings, Advanced, Virtual memory, Change. Uncheck automatic management, choose a drive that has free space, and set a custom size (16384 MB initial and 32768 MB maximum is a reasonable laptop choice). Then rerun the same training command. It continues from `checkpoints/recovery`.
 
 ### Train
 
@@ -76,17 +80,33 @@ Training keeps going if Windows cannot create the `checkpoints/last` symlink (Wi
 python train.py --device cuda
 ```
 
-That is the real run: 100,000 steps, batch size 8, checkpoints under `outputs/train/act_aloha_transfer_cube/checkpoints/`. LeRobot also writes a `checkpoints/last` link to the newest one. The folder that evaluation needs is `checkpoints/last/pretrained_model` (it holds `config.json` and `model.safetensors`).
+That is the 100,000-step run. Checkpoints go under `outputs/train/act_aloha_transfer_cube/checkpoints/`:
+
+* `recovery/` is the one full checkpoint (model, optimizer, scheduler, RNG, and step). It is rewritten every 2,000 steps by default. The new tree is written beside it and swapped in with a rename, so a crash mid-save leaves the previous recovery readable.
+* `weights/010000/`, `weights/020000/`, and so on are permanent weights-only copies: `config.json`, `model.safetensors`, `train_config.json`, and the processor files that hold normalization stats. Optimizer state is not included. They are never deleted. The best checkpoint is not always the latest one (an 8k snapshot has beaten a 20k snapshot on this task), which is why these stay.
+* `last` is a shortcut to `recovery` when the disk can store a symlink. Evaluation also accepts `recovery/pretrained_model` or `weights/<step>/pretrained_model` directly.
+
+The ACT policy used here has 51,613,582 parameters. In fp32 that is 206,454,328 bytes (196.9 MiB) of weights, plus a few small JSON and processor files, so a weights-only folder is about 200 MB. A full recovery checkpoint is about 591 MB because it also stores Adam state. A 60k run that keeps one recovery and a weights folder every 10k steps (six of them, including the final step) is on the order of 1.8 GB of checkpoints, instead of a new 591 MB folder every 2,000 steps.
+
+60,000 steps on the laptop this was aimed at (Windows, RTX 4050 6 GB, about 3 GB free):
+
+```bash
+python train.py --steps 60000 --batch-size 8 --device cuda --num-workers 1 \
+    --recovery-every 2000 --weights-every 10000 --min-free-gb 1 \
+    --env_eval_freq=0 --output-dir outputs/train/act_aloha_60k
+```
+
+Rerun that same command to resume. `--steps` is the new finish line. Before each save, free disk is checked. Below `--min-free-gb` (default 1), the permanent weights save is skipped and a warning is printed. The recovery save still runs when there is room for another full copy (about 800 MB until a recovery folder exists to measure, then about 1.1 times that folder). If even the recovery save does not fit, it is skipped instead of crashing.
 
 Useful shorter commands:
 
 ```bash
-# Laptop CPU. Checkpoints every 500 steps so a crash keeps something.
+# Laptop CPU. The recovery checkpoint refreshes every 500 steps.
 python train.py --steps 2000 --batch-size 4 --device cpu --num-workers 0 \
-    --output-dir outputs/train/act_cpu --save_freq=500 --env_eval_freq=0
+    --output-dir outputs/train/act_cpu --recovery-every 500 --env_eval_freq=0
 
-# Continue a run that was interrupted. --steps is the new finish line.
-# If the checkpoint is already at step 2000, this trains 18000 more steps.
+# Same output directory, later finish line. --resume is optional:
+# a recovery checkpoint is picked up automatically.
 python train.py --resume --steps 20000 --output-dir outputs/train/act_cpu --device cpu
 ```
 
@@ -94,14 +114,17 @@ Flags:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--steps` | 100000 | Optimizer steps |
+| `--steps` | 100000 | Optimizer steps. On resume, this is the new finish line |
 | `--batch-size` | 8 | Samples per step |
 | `--device` | `cuda` if a GPU is visible, else `cpu` | |
-| `--output-dir` | `outputs/train/act_aloha_transfer_cube` | Must be a new folder, unless you pass `--resume` |
-| `--num-workers` | 4 | Data-loading processes. Use `0` if you are low on RAM |
-| `--resume` | off | Continue from `checkpoints/last` in `--output-dir`. `--steps` is the new finish line. If `last` is missing (Google Drive cannot store that shortcut), the newest numbered checkpoint is used |
+| `--output-dir` | `outputs/train/act_aloha_transfer_cube` | Rerunning the same command resumes from `checkpoints/recovery` |
+| `--num-workers` | 1 on Windows, 4 elsewhere | Data-loading processes. Use `0` if you are low on RAM |
+| `--recovery-every` | 2000 | How often the single full checkpoint is replaced. `--save_freq` overrides this |
+| `--weights-every` | 10000 | How often a permanent weights-only folder is added. The final step is always saved |
+| `--min-free-gb` | 1 | Skip a weights save when free disk is below this. Recovery still saves if it fits |
+| `--resume` | automatic when a checkpoint exists | Continue from `checkpoints/recovery`. If that folder is missing, the newest numbered checkpoint from an older run is used |
 
-Anything else is passed straight to LeRobot. `--env_eval_freq=0` turns off rollouts during training (you will evaluate afterwards with `evaluate.py`). `--save_freq=2000` writes extra checkpoints. `--policy.push_to_hub=true --policy.repo_id=YOUR_USER/act_aloha_transfer` uploads them. WandB is off unless you pass `--wandb.enable=true`.
+Anything else is passed straight to LeRobot. `--env_eval_freq=0` is set for you unless you pass another value, so training does not also roll out the simulator (evaluate afterwards with `evaluate.py`). `--prefetch_factor=2` is set when there is at least one data worker, instead of LeRobot's 4. `--policy.push_to_hub=true --policy.repo_id=YOUR_USER/act_aloha_transfer` uploads checkpoints. WandB is off unless you pass `--wandb.enable=true`.
 
 The first run downloads the dataset (about 500 MB) and the ResNet-18 ImageNet weights (about 45 MB).
 
@@ -109,12 +132,12 @@ The first run downloads the dataset (about 500 MB) and the ResNet-18 ImageNet we
 
 ```bash
 python evaluate.py \
-    --checkpoint outputs/train/act_aloha_transfer_cube/checkpoints/last/pretrained_model \
+    --checkpoint outputs/train/act_aloha_transfer_cube/checkpoints/recovery/pretrained_model \
     --episodes 20 \
     --device cuda
 ```
 
-You can also pass the training directory, a step directory (`checkpoints/000200`), or a Hub id:
+You can also pass the training directory (the latest recovery or weights snapshot is used), a weights directory (`checkpoints/weights/008000`), a recovery directory, an older numbered directory (`checkpoints/000200`), or a Hub id:
 
 ```bash
 python evaluate.py \
@@ -129,7 +152,7 @@ To keep the interesting videos, pass `--save-failures`. That saves every failed 
 
 ```bash
 python evaluate.py \
-    --checkpoint outputs/train/act_aloha_transfer_cube/checkpoints/last/pretrained_model \
+    --checkpoint outputs/train/act_aloha_transfer_cube/checkpoints/recovery/pretrained_model \
     --episodes 50 \
     --save-failures \
     --device cuda
@@ -159,7 +182,7 @@ python evaluate.py \
 python compare.py --train-dir outputs/train/act_aloha_transfer_cube --episodes 20 --device cuda
 ```
 
-That evaluates every numbered checkpoint (not the `last` shortcut a second time) with the same seeds. It prints step, success rate, and average max reward, plus a 95% Wilson interval, and writes `outputs/eval/compare/compare.csv`. `compare.py` takes the same `--temporal-ensemble`, `--cube-range`, `--cube-x`, and `--cube-y` flags. When you pass them, the CSV gains a column for each one you turned on.
+That evaluates every permanent weights snapshot, plus the recovery checkpoint when its step is not already in the weights list (not the `last` shortcut a second time), with the same seeds. Older numbered folders are included too. It prints step, success rate, and average max reward, plus a 95% Wilson interval, and writes `outputs/eval/compare/compare.csv`. `compare.py` takes the same `--temporal-ensemble`, `--cube-range`, `--cube-x`, and `--cube-y` flags. When you pass them, the CSV gains a column for each one you turned on.
 
 Pass a list instead of a training directory:
 
@@ -178,14 +201,14 @@ An untrained or barely trained policy should score near 0%. That means the loop 
 
 Open `notebooks/train_colab.ipynb` (or the badge, once the repo is public). Use a GPU runtime (**T4** is enough). A fresh free T4 runtime is Python 3.13 with a CUDA build of PyTorch already installed. The notebook writes a constraints file for those exact `torch` and `torchvision` versions, installs LeRobot against it, and prints the full pip log. It trains for **8,000 steps**, evaluates 20 episodes, and plays a video in the page.
 
-Why 8,000 and not 100,000: a free T4 session often dies after a couple of hours, and 100,000 steps is an overnight run. 8,000 steps is long enough to see the loss drop and short enough to finish, with a checkpoint every 2,000 steps so a disconnect does not erase everything. The policy will not be reliable yet. The loss curve matters more than the success rate at this length.
+Why 8,000 and not 100,000: a free T4 session often dies after a couple of hours, and 100,000 steps is an overnight run. 8,000 steps is long enough to see the loss drop and short enough to finish. The notebook keeps one full recovery checkpoint, refreshed every 2,000 steps, and a permanent weights folder at the same interval (Colab has the disk for that; a laptop should leave `--weights-every` at 10,000). A disconnect does not erase the run: rerun the same `train.py` command, or the Train longer cell, and it resumes. The policy will not be reliable yet. The loss curve matters more than the success rate at this length. An 8k weights folder can score better than a later one, so compare them instead of keeping only the last step.
 
 The notebook has four extra sections after that first run:
 
-- **Google Drive** (off unless you set `SAVE_TO_DRIVE = True`). Mounts Drive and points `outputs/train` at a folder there, so checkpoints survive a disconnect. In a new session, run the install cells and this cell again before you resume.
-- **Train longer**. Sets `TOTAL_STEPS = 20000` and runs `train.py --resume` on the same output directory, then evaluates 50 episodes with `--save-failures` and plays the failure videos.
+- **Google Drive** (off unless you set `SAVE_TO_DRIVE = True`). Mounts Drive and points `outputs/train` at a folder there, so checkpoints survive a disconnect. In a new session, run the install cells and this cell again before you resume. `checkpoints/recovery` is a real directory, so Drive can store it. The `checkpoints/last` symlink may still be missing.
+- **Train longer**. Sets `TOTAL_STEPS = 20000` and runs `train.py` on the same output directory, then evaluates 50 episodes with `--save-failures` and plays the failure videos. `--resume` is still accepted; the same command without it also resumes when `checkpoints/recovery` exists.
 - **Look inside the network**. Loads the checkpoint and prints parameter counts for the ResNet backbone, transformer encoder, decoder, VAE encoder, and the input/output projections, plus the ACT config values.
-- **Compare checkpoints**. Runs `compare.py` over the numbered checkpoints.
+- **Compare checkpoints**. Runs `compare.py` over the permanent weights folders.
 
 ## Expected runtimes
 
@@ -210,11 +233,11 @@ Measured on a 4-core CPU with no GPU, batch size 2, one camera, OSMesa rendering
 - **Do not upgrade numpy past 2.2.x, or fsspec past 2026.2.0.** LeRobot 0.6.1 requires `numpy<2.3`. datasets 4.8.5 requires `fsspec<=2026.2.0`. Installing a torch wheel from the PyTorch index can pull numpy 2.5 and fsspec 2026.7; `setup.sh` pins `numpy==2.2.6` and `fsspec==2026.2.0` again afterwards. The Colab install does not pass those pins: the LeRobot and datasets requirements themselves downgrade newer preinstalled copies.
 - **`labmaze` has no Python 3.13 wheel.** It is a `dm-control` dependency, and `gym-aloha` pulls `dm-control` in, but AlohaTransferCube never imports it. On 3.13 the source build needs Bazel and fails. `setup.sh` and the notebook install a pure-Python placeholder of `labmaze==1.0.6` in that case. Python 3.12 still gets the real wheel from `requirements.txt`.
 - **Headless machines need `MUJOCO_GL`.** Without `libosmesa6` (CPU) or `libegl1` (GPU), rendering crashes on import. `setup.sh` installs both.
-- **The output directory must be new.** LeRobot raises `FileExistsError` if `--output-dir` already exists and you are not resuming.
+- **Rerunning the same output directory resumes.** `train.py` turns resume on when `checkpoints/recovery` (or an older numbered checkpoint) is already there. LeRobot still raises `FileExistsError` if the directory exists and there is nothing to resume from. Delete that directory to start over. A finish line at or below the saved step is rejected so the run does not exit immediately.
 - **`--policy.push_to_hub` defaults to true inside LeRobot.** `train.py` turns it off unless you pass `--policy.push_to_hub=true` and a `--policy.repo_id`.
 - **Video decoding uses torchcodec**, which needs a matching PyTorch. If a batch fails while reading `observation.images.top`, rerun with `--dataset.video_backend=pyav`. The dataset videos are AV1.
 - **Shutting the simulator down can print a `RuntimeError` from MuJoCo's render thread** (`cannot schedule new futures after shutdown`). The episode has already been scored. You can ignore that message.
-- **Low memory:** `--batch-size 2 --num-workers 0`. The default batch size of 8 plus 4 data workers is aimed at a GPU workstation.
+- **Low memory:** `--batch-size 2 --num-workers 0`. On Windows the default is already `--num-workers 1`, and mid-training rollouts are off unless you pass `--env_eval_freq`. Error 1455 means the page file is too small; see the Windows section above.
 - **Success rate on a short run will be ~0%.** That is not a broken install.
 
 ## Next steps
@@ -309,6 +332,7 @@ compare.py               score several checkpoints on the same episodes
 mimic_arm/mujoco_gl.py   pick EGL or OSMesa before MuJoCo imports
 mimic_arm/ensure_labmaze.py  labmaze placeholder when Python 3.13 has no wheel
 mimic_arm/checkpoints.py find a pretrained_model folder or list step checkpoints
+mimic_arm/saving.py      one recovery checkpoint, permanent weights, disk guard
 mimic_arm/act_summary.py parameter counts for a trained ACT policy
 notebooks/train_colab.ipynb
 ```
@@ -320,11 +344,11 @@ These commands were run on the CPU-only machine this project was built on. A nea
 ```bash
 python train.py --steps 100 --batch-size 2 --device cpu --num-workers 0 \
     --output-dir outputs/train/smoke_act --env_eval_freq=0
-python evaluate.py --checkpoint outputs/train/smoke_act/checkpoints/last \
+python evaluate.py --checkpoint outputs/train/smoke_act \
     --episodes 2 --videos 2 --device cpu --output-dir outputs/eval/smoke_act
 ```
 
-Training used LeRobot's ACT defaults (ResNet-18, chunk size 100, learning rate `1e-5`). The loop logged about 1 step/s. Loss fell from 48.1 at step 10 to 7.2 at step 100, and the checkpoint landed in `outputs/train/smoke_act/checkpoints/000100/pretrained_model`.
+Training used LeRobot's ACT defaults (ResNet-18, chunk size 100, learning rate `1e-5`). The loop logged about 1 step/s. Loss fell from 48.1 at step 10 to 7.2 at step 100. That smoke test predates recovery checkpoints and wrote `outputs/train/smoke_act/checkpoints/000100/pretrained_model`. A run today writes `checkpoints/recovery` and, on the final step, `checkpoints/weights/000100`. Point `evaluate.py` at either of those, or at the training directory.
 
 Evaluation printed:
 

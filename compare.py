@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 """Score several ACT checkpoints on the same simulated episodes.
 
-Pass a training output directory to score every numbered checkpoint in it,
-or pass an explicit list. Every checkpoint sees the same seeds and the same
+Pass a training output directory to score every saved checkpoint in it
+(permanent weights folders, the recovery checkpoint when its step is not
+already saved, and numbered folders from older runs), or pass an explicit
+list. Every checkpoint sees the same seeds and the same
 number of episodes, so the table is a fair comparison of training steps.
 
 20 to 50 episodes is a small sample. A success rate of 65% on 20 episodes
@@ -11,7 +13,7 @@ interval, which is a range that likely contains the true success rate.
 
 Examples
 --------
-Every numbered checkpoint from a training run, 20 episodes each::
+Every saved checkpoint from a training run, 20 episodes each::
 
     python compare.py --train-dir outputs/train/act_aloha_transfer_cube
 
@@ -68,7 +70,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--train-dir",
         type=Path,
-        help="Training output directory. Every numbered checkpoint folder is evaluated.",
+        help=(
+            "Training output directory. Every permanent weights folder is evaluated, "
+            "plus the recovery checkpoint when that step was not saved as weights."
+        ),
     )
     parser.add_argument(
         "--checkpoints",
