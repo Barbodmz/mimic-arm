@@ -336,7 +336,7 @@ class TrainCommandTest(unittest.TestCase):
                     )
             command = captured["command"]
             self.assertIn("--resume=true", command)
-            self.assertIn("--num_workers=4", command)
+            self.assertIn(f"--num_workers={default_num_workers()}", command)
             self.assertIn("--save_freq=2000", command)
             self.assertIn("--env_eval_freq=0", command)
             self.assertIn("--prefetch_factor=2", command)
