@@ -1,0 +1,808 @@
+{
+  "issue": 12,
+  "dataset": "lerobot/aloha_sim_transfer_cube_human",
+  "seed": 12,
+  "k": 20,
+  "fairness_passed": true,
+  "fairness_method": "medoid_neighborhood",
+  "fairness_reason": "alike and random sets cover a comparable spread of cube spots",
+  "next_step_if_unfair": null,
+  "medoid": 12,
+  "alike": [
+    12,
+    43,
+    3,
+    38,
+    36,
+    26,
+    1,
+    24,
+    28,
+    49,
+    20,
+    32,
+    27,
+    42,
+    15,
+    8,
+    46,
+    35,
+    33,
+    25
+  ],
+  "random": [
+    0,
+    5,
+    9,
+    14,
+    17,
+    22,
+    23,
+    24,
+    28,
+    29,
+    30,
+    33,
+    35,
+    40,
+    41,
+    42,
+    43,
+    47,
+    48,
+    49
+  ],
+  "normalization": "Train both lists with train.py --episodes. LeRobot keeps meta/stats.json from the full 50-episode dataset.",
+  "cube_spot_sources": {
+    "gripper_close": 50
+  },
+  "cube_spot_note": "The dataset has no cube-position field. Each spot is the right fingertip pad at the first gripper close that reaches the table. The pad offset is measured from the ViperX finger mesh (about 1.3 cm past the finger joint), not fitted to the spawn box. Recovered x is shifted a few centimeters toward the right arm relative to the 0.0\u20130.2 m spawn interval; both sets share that shift. The first camera frame was not needed: gripper close recovered all 50 episodes.",
+  "fairness": {
+    "passed": true,
+    "method": "medoid_neighborhood",
+    "reason": "alike and random sets cover a comparable spread of cube spots",
+    "details": {
+      "alike": {
+        "x_span": 0.1568067327052868,
+        "y_span": 0.18293783261806124,
+        "x_std": 0.04514162119657577,
+        "y_std": 0.05785181270414671,
+        "x_mean": 0.11037151711759843,
+        "y_mean": 0.5123788022444157,
+        "quadrants": {
+          "high_x_low_y": 5,
+          "low_x_high_y": 6,
+          "low_x_low_y": 5,
+          "high_x_high_y": 4
+        },
+        "mean_distance_to_medoid": 1.305570585527302
+      },
+      "random": {
+        "x_span": 0.17777184268978297,
+        "y_span": 0.15060301944276294,
+        "x_std": 0.06019886148212863,
+        "y_std": 0.04406593658503449,
+        "x_mean": 0.13808218354114643,
+        "y_mean": 0.5186227056496799,
+        "quadrants": {
+          "high_x_high_y": 9,
+          "high_x_low_y": 5,
+          "low_x_low_y": 2,
+          "low_x_high_y": 4
+        },
+        "mean_distance_to_medoid": 1.9708001843625915
+      },
+      "overlap": [
+        24,
+        28,
+        33,
+        35,
+        42,
+        43,
+        49
+      ]
+    }
+  },
+  "episodes": [
+    {
+      "index": 0,
+      "distance_to_medoid": 1.70108676686441,
+      "duration_s": 7.98,
+      "right_close_s": 3.76,
+      "pause_fraction": 0.1675,
+      "cube": {
+        "x": 0.14847993974892282,
+        "y": 0.5403772061440213,
+        "z": 0.06473781059206526,
+        "frame": 194,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 1,
+      "distance_to_medoid": 1.2098273207855899,
+      "duration_s": 7.98,
+      "right_close_s": 2.76,
+      "pause_fraction": 0.1675,
+      "cube": {
+        "x": 0.13619033925990603,
+        "y": 0.5424613523813644,
+        "z": 0.059897007433607305,
+        "frame": 146,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 2,
+      "distance_to_medoid": 1.7750699186942807,
+      "duration_s": 7.98,
+      "right_close_s": 2.42,
+      "pause_fraction": 0.135,
+      "cube": {
+        "x": 0.19182359415036845,
+        "y": 0.40940942247079243,
+        "z": 0.07298646771612546,
+        "frame": 126,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 3,
+      "distance_to_medoid": 1.089961674451188,
+      "duration_s": 7.98,
+      "right_close_s": 3.28,
+      "pause_fraction": 0.18,
+      "cube": {
+        "x": 0.08552566256413863,
+        "y": 0.42828061450966504,
+        "z": 0.09750982764246717,
+        "frame": 178,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 4,
+      "distance_to_medoid": 2.3927688542489682,
+      "duration_s": 7.98,
+      "right_close_s": 4.0,
+      "pause_fraction": 0.1025,
+      "cube": {
+        "x": 0.07653241270199827,
+        "y": 0.5582018848589154,
+        "z": 0.06210871823936018,
+        "frame": 210,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 5,
+      "distance_to_medoid": 2.1847435480744952,
+      "duration_s": 7.98,
+      "right_close_s": 3.66,
+      "pause_fraction": 0.1375,
+      "cube": {
+        "x": 0.1866058328157989,
+        "y": 0.4651938752991201,
+        "z": 0.0733117919758582,
+        "frame": 190,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 6,
+      "distance_to_medoid": 2.4610645165377387,
+      "duration_s": 7.98,
+      "right_close_s": 2.3,
+      "pause_fraction": 0.2,
+      "cube": {
+        "x": 0.14328839327962986,
+        "y": 0.5384633968375424,
+        "z": 0.07127982666170671,
+        "frame": 122,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 7,
+      "distance_to_medoid": 2.683003735176396,
+      "duration_s": 7.98,
+      "right_close_s": 2.16,
+      "pause_fraction": 0.275,
+      "cube": {
+        "x": 0.20285127453982138,
+        "y": 0.44066797679254893,
+        "z": 0.07851835471641058,
+        "frame": 114,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 8,
+      "distance_to_medoid": 1.5362644271780852,
+      "duration_s": 7.98,
+      "right_close_s": 2.7,
+      "pause_fraction": 0.1575,
+      "cube": {
+        "x": 0.09700083841659825,
+        "y": 0.5064777584142495,
+        "z": 0.05705732121844557,
+        "frame": 142,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 9,
+      "distance_to_medoid": 2.1008959027672303,
+      "duration_s": 7.98,
+      "right_close_s": 2.68,
+      "pause_fraction": 0.2725,
+      "cube": {
+        "x": 0.1016299978675988,
+        "y": 0.513696775488003,
+        "z": 0.061512516809114626,
+        "frame": 143,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 10,
+      "distance_to_medoid": 1.8913458456732766,
+      "duration_s": 7.98,
+      "right_close_s": 2.32,
+      "pause_fraction": 0.23,
+      "cube": {
+        "x": 0.16213126397414407,
+        "y": 0.4991393497518042,
+        "z": 0.07162963012324061,
+        "frame": 129,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 11,
+      "distance_to_medoid": 1.9782797936111123,
+      "duration_s": 7.98,
+      "right_close_s": 2.54,
+      "pause_fraction": 0.225,
+      "cube": {
+        "x": 0.06843297308661911,
+        "y": 0.5368469219795048,
+        "z": 0.07932970137679365,
+        "frame": 133,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 12,
+      "distance_to_medoid": 0.0,
+      "duration_s": 7.98,
+      "right_close_s": 3.1,
+      "pause_fraction": 0.1375,
+      "cube": {
+        "x": 0.12113547843606398,
+        "y": 0.4207887063374898,
+        "z": 0.07251262817410405,
+        "frame": 162,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 13,
+      "distance_to_medoid": 2.3672792261101914,
+      "duration_s": 7.98,
+      "right_close_s": 4.08,
+      "pause_fraction": 0.1175,
+      "cube": {
+        "x": 0.15761753574844717,
+        "y": 0.5811066245700032,
+        "z": 0.06477685820271833,
+        "frame": 212,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 14,
+      "distance_to_medoid": 2.0544219668717743,
+      "duration_s": 7.98,
+      "right_close_s": 3.54,
+      "pause_fraction": 0.17,
+      "cube": {
+        "x": 0.05608848205885048,
+        "y": 0.46288200954734526,
+        "z": 0.07173351355574205,
+        "frame": 183,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 15,
+      "distance_to_medoid": 1.5286483934356947,
+      "duration_s": 7.98,
+      "right_close_s": 2.72,
+      "pause_fraction": 0.14,
+      "cube": {
+        "x": 0.08261830199105752,
+        "y": 0.4963420897724556,
+        "z": 0.071604734290231,
+        "frame": 142,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 16,
+      "distance_to_medoid": 1.9032027269796117,
+      "duration_s": 7.98,
+      "right_close_s": 3.68,
+      "pause_fraction": 0.115,
+      "cube": {
+        "x": 0.13226490114451353,
+        "y": 0.5810598057106613,
+        "z": 0.07334164187638637,
+        "frame": 191,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 17,
+      "distance_to_medoid": 2.276062949312937,
+      "duration_s": 7.98,
+      "right_close_s": 3.78,
+      "pause_fraction": 0.085,
+      "cube": {
+        "x": 0.21529499332621874,
+        "y": 0.5545425998117116,
+        "z": 0.07687629854499943,
+        "frame": 203,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 18,
+      "distance_to_medoid": 1.9645683705168349,
+      "duration_s": 7.98,
+      "right_close_s": 3.66,
+      "pause_fraction": 0.09,
+      "cube": {
+        "x": 0.2032013059345877,
+        "y": 0.5238899080866064,
+        "z": 0.06703626928772394,
+        "frame": 191,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 19,
+      "distance_to_medoid": 2.7297030622869562,
+      "duration_s": 7.98,
+      "right_close_s": 2.4,
+      "pause_fraction": 0.25,
+      "cube": {
+        "x": 0.11657332802653662,
+        "y": 0.4944996037268687,
+        "z": 0.0698417066499634,
+        "frame": 126,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 20,
+      "distance_to_medoid": 1.3954136969737874,
+      "duration_s": 7.98,
+      "right_close_s": 3.36,
+      "pause_fraction": 0.165,
+      "cube": {
+        "x": 0.13159180725295175,
+        "y": 0.5779868892274928,
+        "z": 0.0635712393485153,
+        "frame": 175,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 21,
+      "distance_to_medoid": 3.172315280273985,
+      "duration_s": 7.98,
+      "right_close_s": 2.08,
+      "pause_fraction": 0.3225,
+      "cube": {
+        "x": 0.18092491620396223,
+        "y": 0.5028992978182564,
+        "z": 0.07943598759351028,
+        "frame": 110,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 22,
+      "distance_to_medoid": 3.1025620795394975,
+      "duration_s": 7.98,
+      "right_close_s": 4.84,
+      "pause_fraction": 0.1675,
+      "cube": {
+        "x": 0.2025460120600221,
+        "y": 0.47649041957889515,
+        "z": 0.07054238220380099,
+        "frame": 254,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 23,
+      "distance_to_medoid": 2.346807425249207,
+      "duration_s": 7.98,
+      "right_close_s": 2.5,
+      "pause_fraction": 0.2375,
+      "cube": {
+        "x": 0.1545959151905426,
+        "y": 0.5277104903683022,
+        "z": 0.0755332675922071,
+        "frame": 130,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 24,
+      "distance_to_medoid": 1.3396554521668296,
+      "duration_s": 7.98,
+      "right_close_s": 2.76,
+      "pause_fraction": 0.18,
+      "cube": {
+        "x": 0.16675062535638832,
+        "y": 0.47484405653718087,
+        "z": 0.0711956485993411,
+        "frame": 144,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 25,
+      "distance_to_medoid": 1.643232688718202,
+      "duration_s": 7.98,
+      "right_close_s": 3.3,
+      "pause_fraction": 0.1725,
+      "cube": {
+        "x": 0.09438255190261757,
+        "y": 0.6037265389555511,
+        "z": 0.06718528360943819,
+        "frame": 180,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 26,
+      "distance_to_medoid": 1.2058515707339805,
+      "duration_s": 7.98,
+      "right_close_s": 3.08,
+      "pause_fraction": 0.1175,
+      "cube": {
+        "x": 0.20217698105516385,
+        "y": 0.47663398326129,
+        "z": 0.07665511958603248,
+        "frame": 160,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 27,
+      "distance_to_medoid": 1.4353005770827858,
+      "duration_s": 7.98,
+      "right_close_s": 3.32,
+      "pause_fraction": 0.195,
+      "cube": {
+        "x": 0.09400881399576169,
+        "y": 0.4880503859561437,
+        "z": 0.07004605531159093,
+        "frame": 171,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 28,
+      "distance_to_medoid": 1.3663073396444811,
+      "duration_s": 7.98,
+      "right_close_s": 3.18,
+      "pause_fraction": 0.1475,
+      "cube": {
+        "x": 0.05714333221202955,
+        "y": 0.5485059454120358,
+        "z": 0.06258094765153357,
+        "frame": 165,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 29,
+      "distance_to_medoid": 1.7320422584041235,
+      "duration_s": 7.98,
+      "right_close_s": 2.54,
+      "pause_fraction": 0.145,
+      "cube": {
+        "x": 0.12978748446250662,
+        "y": 0.4589402252689815,
+        "z": 0.08038483819844075,
+        "frame": 133,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 30,
+      "distance_to_medoid": 2.62116493395418,
+      "duration_s": 7.98,
+      "right_close_s": 2.3,
+      "pause_fraction": 0.18,
+      "cube": {
+        "x": 0.180836810683853,
+        "y": 0.5178313597947044,
+        "z": 0.0719014517148328,
+        "frame": 123,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 31,
+      "distance_to_medoid": 2.353025225963188,
+      "duration_s": 7.98,
+      "right_close_s": 2.52,
+      "pause_fraction": 0.2075,
+      "cube": {
+        "x": 0.21316153046487266,
+        "y": 0.4867606351118684,
+        "z": 0.0810290541963613,
+        "frame": 132,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 32,
+      "distance_to_medoid": 1.4058922543860575,
+      "duration_s": 7.98,
+      "right_close_s": 2.88,
+      "pause_fraction": 0.1575,
+      "cube": {
+        "x": 0.1209486427357374,
+        "y": 0.5726368055238158,
+        "z": 0.06185823685177134,
+        "frame": 155,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 33,
+      "distance_to_medoid": 1.6334217088048777,
+      "duration_s": 7.98,
+      "right_close_s": 3.56,
+      "pause_fraction": 0.105,
+      "cube": {
+        "x": 0.14989542219200166,
+        "y": 0.5697865381223362,
+        "z": 0.07787959992072396,
+        "frame": 185,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 34,
+      "distance_to_medoid": 1.6773817904625097,
+      "duration_s": 7.98,
+      "right_close_s": 2.72,
+      "pause_fraction": 0.1525,
+      "cube": {
+        "x": 0.22337244947153329,
+        "y": 0.5005036523454568,
+        "z": 0.07653671727228376,
+        "frame": 142,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 35,
+      "distance_to_medoid": 1.5984372235653026,
+      "duration_s": 7.98,
+      "right_close_s": 3.0,
+      "pause_fraction": 0.165,
+      "cube": {
+        "x": 0.13095492483573393,
+        "y": 0.4373533973441152,
+        "z": 0.07324530862269757,
+        "frame": 171,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 36,
+      "distance_to_medoid": 1.194037895272393,
+      "duration_s": 7.98,
+      "right_close_s": 3.2,
+      "pause_fraction": 0.1425,
+      "cube": {
+        "x": 0.09909067335252042,
+        "y": 0.4217917950865945,
+        "z": 0.0664183688042813,
+        "frame": 167,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 37,
+      "distance_to_medoid": 1.9581608083315813,
+      "duration_s": 7.98,
+      "right_close_s": 2.82,
+      "pause_fraction": 0.2175,
+      "cube": {
+        "x": 0.11400705212165263,
+        "y": 0.578365092642191,
+        "z": 0.07183073218957572,
+        "frame": 147,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 38,
+      "distance_to_medoid": 1.1521519945114809,
+      "duration_s": 7.98,
+      "right_close_s": 3.08,
+      "pause_fraction": 0.075,
+      "cube": {
+        "x": 0.051387470077303155,
+        "y": 0.5421168437611428,
+        "z": 0.06938978910069646,
+        "frame": 165,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 39,
+      "distance_to_medoid": 2.3032462659470845,
+      "duration_s": 7.98,
+      "right_close_s": 3.72,
+      "pause_fraction": 0.245,
+      "cube": {
+        "x": 0.19900594700517696,
+        "y": 0.42945878969687346,
+        "z": 0.08051275695277663,
+        "frame": 191,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 40,
+      "distance_to_medoid": 2.653375826443787,
+      "duration_s": 7.98,
+      "right_close_s": 4.2,
+      "pause_fraction": 0.0875,
+      "cube": {
+        "x": 0.22799140581892285,
+        "y": 0.5188041893220265,
+        "z": 0.06789951545446908,
+        "frame": 225,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 41,
+      "distance_to_medoid": 2.4244991078797185,
+      "duration_s": 7.98,
+      "right_close_s": 3.9,
+      "pause_fraction": 0.155,
+      "cube": {
+        "x": 0.19393794161455802,
+        "y": 0.5301263296134627,
+        "z": 0.06292194476510887,
+        "frame": 202,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 42,
+      "distance_to_medoid": 1.4979836038732555,
+      "duration_s": 7.98,
+      "right_close_s": 3.0,
+      "pause_fraction": 0.1975,
+      "cube": {
+        "x": 0.07349206505490954,
+        "y": 0.5864297104724405,
+        "z": 0.05859681188666162,
+        "frame": 156,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 43,
+      "distance_to_medoid": 0.9207297662077397,
+      "duration_s": 7.98,
+      "right_close_s": 2.92,
+      "pause_fraction": 0.195,
+      "cube": {
+        "x": 0.05021956312913988,
+        "y": 0.5789062336712043,
+        "z": 0.05826823960509473,
+        "frame": 155,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 44,
+      "distance_to_medoid": 2.1836332817680826,
+      "duration_s": 7.98,
+      "right_close_s": 3.76,
+      "pause_fraction": 0.165,
+      "cube": {
+        "x": 0.10987972989836718,
+        "y": 0.4630603080582319,
+        "z": 0.06502081149330205,
+        "frame": 197,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 45,
+      "distance_to_medoid": 2.360101625698078,
+      "duration_s": 7.98,
+      "right_close_s": 2.54,
+      "pause_fraction": 0.24,
+      "cube": {
+        "x": 0.09107824629483681,
+        "y": 0.5547143795876215,
+        "z": 0.07299958606769984,
+        "frame": 134,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 46,
+      "distance_to_medoid": 1.5735815117500243,
+      "duration_s": 7.98,
+      "right_close_s": 2.74,
+      "pause_fraction": 0.1025,
+      "cube": {
+        "x": 0.2070262958344267,
+        "y": 0.47660678923097144,
+        "z": 0.0727512626584315,
+        "frame": 145,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 47,
+      "distance_to_medoid": 2.5126480557340556,
+      "duration_s": 7.98,
+      "right_close_s": 2.98,
+      "pause_fraction": 0.245,
+      "cube": {
+        "x": 0.061465858605138174,
+        "y": 0.5242267235000566,
+        "z": 0.09004779081514308,
+        "frame": 166,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 48,
+      "distance_to_medoid": 1.96444516088964,
+      "duration_s": 7.98,
+      "right_close_s": 3.56,
+      "pause_fraction": 0.0975,
+      "cube": {
+        "x": 0.2180365110922746,
+        "y": 0.5879564167868782,
+        "z": 0.06528131498271113,
+        "frame": 191,
+        "source": "gripper_close"
+      }
+    },
+    {
+      "index": 49,
+      "distance_to_medoid": 1.3847126110042882,
+      "duration_s": 7.98,
+      "right_close_s": 3.44,
+      "pause_fraction": 0.1775,
+      "cube": {
+        "x": 0.05589055269751834,
+        "y": 0.49784961091077645,
+        "z": 0.07623231454925104,
+        "frame": 178,
+        "source": "gripper_close"
+      }
+    }
+  ]
+}
