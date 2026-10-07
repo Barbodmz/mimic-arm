@@ -125,10 +125,47 @@ Flags:
 | `--weights-every` | 10000 | How often a permanent weights-only folder is added. The final step is always saved |
 | `--min-free-gb` | 1 | Skip a weights save when free disk is below this. Recovery still saves if it fits |
 | `--resume` | automatic when a checkpoint exists | Continue from `checkpoints/recovery`. If that folder is missing, the newest numbered checkpoint from an older run is used |
+| `--episodes` | all 50 demos | Comma-separated episode indices, or a JSON file from `pick_demos.py`. LeRobot 0.6.1 keeps `meta/stats.json` from the full dataset |
+| `--episode-set` |  | `alike` or `random` when `--episodes` is `demo_sets/option4_sets.json` |
 
 Anything else is passed straight to LeRobot. `--env_eval_freq=0` is set for you unless you pass another value, so training does not also roll out the simulator (evaluate afterwards with `evaluate.py`). `--prefetch_factor=2` is set when there is at least one data worker, instead of LeRobot's 4. `--policy.push_to_hub=true --policy.repo_id=YOUR_USER/act_aloha_transfer` uploads checkpoints. WandB is off unless you pass `--wandb.enable=true`.
 
 The first run downloads the dataset (about 500 MB) and the ResNet-18 ImageNet weights (about 45 MB).
+
+### Alike vs random human demos (issue #12)
+
+`pick_demos.py` builds the two 20-episode lists for the consistency-vs-variety comparison. It reads the joint and action streams (no GPU), scores speed, pauses, and gripper-close timing after stretching every demo to the same length, and keeps duration as its own term. The random list is `random.Random(12)`.
+
+The dataset has no cube-position field. The script estimates each cube from the right fingertip at the first gripper close that reaches the table. The first top-camera frame is only a backup, and this dataset did not need it: all 50 episodes recovered from the gripper. Cube-spot fairness **passed**. The 20 nearest to the typical motion and the seed-12 random 20 cover a similar spread (x spans 0.157 m vs 0.178 m, y spans 0.183 m vs 0.151 m, all four quadrants of the spawn box in both). Seven episodes are in both lists. Recovered x sits a few centimeters toward the right arm relative to the 0.0–0.2 m spawn interval; both sets share that shift, so it does not favor one list.
+
+Regenerate the lists and the plot (needs `matplotlib`, which is not in `requirements.txt`):
+
+```bash
+python pick_demos.py --output-dir demo_sets
+```
+
+That writes `demo_sets/option4_sets.json` and `demo_sets/option4_alike_vs_random.png`. The checked-in copies are that command on `lerobot/aloha_sim_transfer_cube_human`. If a future run prints `Fairness: FAILED`, do not train: close issue #12 and retrain scripted demos with a wider cube spawn instead.
+
+Train both sets for the same number of steps. Normalization stays the full 50-episode stats either way. These are the laptop runs, not part of the picker:
+
+```bash
+python train.py --steps 100000 --device cuda \
+    --episodes demo_sets/option4_sets.json --episode-set alike \
+    --output-dir outputs/train/act_alike20
+
+python train.py --steps 100000 --device cuda \
+    --episodes demo_sets/option4_sets.json --episode-set random \
+    --output-dir outputs/train/act_random20
+```
+
+Score both checkpoints for 100 episodes from the same seed:
+
+```bash
+python evaluate.py --checkpoint outputs/train/act_alike20/checkpoints/recovery/pretrained_model \
+    --episodes 100 --seed 1000 --device cuda
+python evaluate.py --checkpoint outputs/train/act_random20/checkpoints/recovery/pretrained_model \
+    --episodes 100 --seed 1000 --device cuda
+```
 
 ### Evaluate
 

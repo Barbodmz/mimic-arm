@@ -32,6 +32,13 @@ Short run on a laptop CPU::
     python train.py --steps 200 --batch-size 2 --device cpu --num-workers 0 \\
         --output-dir outputs/train/smoke_act
 
+Issue #12, one of the two 20-demo lists. Both runs keep the full-dataset
+normalization stats. ``--steps`` should be the same number for both::
+
+    python train.py --steps 100000 --device cuda \\
+        --episodes demo_sets/option4_sets.json --episode-set alike \\
+        --output-dir outputs/train/act_alike20
+
 Any extra ``--flag=value`` is forwarded to ``lerobot-train``. ``--save_freq``
 sets the recovery interval when you pass it (otherwise ``--recovery-every``
 does). ``--env_eval_freq=0`` is the default here so training does not also
@@ -52,6 +59,11 @@ if str(ROOT) not in sys.path:
 # Choose EGL vs OSMesa before LeRobot (and therefore MuJoCo) is imported.
 # Training itself does not render, but a full run can roll the policy out in
 # the simulator every ``env_eval_freq`` steps.
+from mimic_arm.episodes import (
+    FULL_DATASET_NORMALIZATION,
+    apply_episode_filter,
+    parse_episodes_argument,
+)
 from mimic_arm.mujoco_gl import configure_mujoco_rendering
 from mimic_arm.saving import (
     DEFAULT_MIN_FREE_GB,
@@ -154,6 +166,21 @@ def build_parser() -> argparse.ArgumentParser:
             "--steps is the new finish line, not a restart."
         ),
     )
+    parser.add_argument(
+        "--episodes",
+        default=None,
+        help=(
+            "Demonstrations to train on. A comma-separated list (0,3,12) or a "
+            "JSON file from pick_demos.py. LeRobot 0.6.1 filters with "
+            "dataset.episodes. Normalization stats stay the full dataset."
+        ),
+    )
+    parser.add_argument(
+        "--episode-set",
+        choices=("alike", "random"),
+        default=None,
+        help="Which list to read when --episodes is the pick_demos.py JSON file.",
+    )
     return parser
 
 
@@ -201,6 +228,13 @@ def main(argv: list[str] | None = None) -> None:
 
     num_workers = args.num_workers if args.num_workers is not None else default_num_workers()
     repo_id = dataset_repo_id(extra, DATASET_REPO_ID)
+    selected_episodes = None
+    if args.episodes is not None:
+        selected_episodes = parse_episodes_argument(args.episodes, args.episode_set)
+    elif args.episode_set is not None:
+        raise SystemExit(
+            "--episode-set is only used with --episodes pointing at the pick_demos.py JSON file."
+        )
 
     command = [
         "--policy.type=act",
@@ -242,6 +276,9 @@ def main(argv: list[str] | None = None) -> None:
     else:
         command.append(f"--save_freq={args.recovery_every}")
 
+    if selected_episodes is not None:
+        command = apply_episode_filter(command, extra, selected_episodes)
+
     resume_config = None
     if args.output_dir.exists():
         resume_config = find_resume_config(args.output_dir)
@@ -274,6 +311,9 @@ def main(argv: list[str] | None = None) -> None:
     print("Training ACT on", repo_id)
     print("Simulation task:", ENV_TASK)
     print("Device:", device)
+    if selected_episodes is not None:
+        print("Training episodes:", ",".join(str(index) for index in selected_episodes))
+        print(FULL_DATASET_NORMALIZATION)
     print("lerobot-train", " ".join(command))
 
     keeper = CheckpointKeeper(
