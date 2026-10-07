@@ -26,8 +26,10 @@ from mimic_arm.checkpoints import checkpoint_step, list_numbered_checkpoints, re
 from mimic_arm.saving import (
     STAGING_NAME,
     CheckpointKeeper,
+    _fsync_open_flags,
     default_num_workers,
     find_resume_config,
+    fsync_tree,
     read_training_step,
     reconcile_recovery,
 )
@@ -217,6 +219,68 @@ class LoadWeightsTest(unittest.TestCase):
                 resolve_checkpoint("lerobot/act_aloha_sim_transfer_cube_human"),
                 "lerobot/act_aloha_sim_transfer_cube_human",
             )
+
+
+class FsyncAndSoftSaveFailureTest(unittest.TestCase):
+    def _open_flags_for_files(self, platform: str) -> list[int]:
+        opened: list[tuple[bool, int]] = []
+        real_open = os.open
+
+        def spy(path, flags, *args, **kwargs):
+            opened.append((Path(path).is_file(), flags))
+            return real_open(path, flags, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "model.safetensors").write_bytes(b"weights")
+            nested = root / "pretrained_model"
+            nested.mkdir()
+            (nested / "config.json").write_text("{}\n")
+            with (
+                mock.patch("mimic_arm.saving.sys.platform", platform),
+                mock.patch("mimic_arm.saving.os.open", side_effect=spy),
+            ):
+                fsync_tree(root)
+        return [flags for is_file, flags in opened if is_file]
+
+    def test_win32_fsync_opens_files_read_write(self) -> None:
+        with mock.patch("mimic_arm.saving.sys.platform", "win32"):
+            self.assertEqual(_fsync_open_flags(), os.O_RDWR)
+        flags = self._open_flags_for_files("win32")
+        self.assertGreaterEqual(len(flags), 2)
+        self.assertTrue(all(flag & os.O_RDWR for flag in flags))
+
+    def test_other_platforms_fsync_opens_files_read_only(self) -> None:
+        flags = self._open_flags_for_files("linux")
+        self.assertGreaterEqual(len(flags), 2)
+        writable = os.O_RDWR | os.O_WRONLY
+        self.assertTrue(all(flag & writable == 0 for flag in flags))
+
+    def test_errno_9_from_fsync_does_not_raise_and_still_publishes_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            keeper = make_keeper(output, weights_every=10_000)
+            with mock.patch("mimic_arm.saving.os.fsync", side_effect=OSError(9, "Bad file descriptor")):
+                self.assertTrue(save_step(keeper, 50))
+            self.assertEqual(read_training_step(output / "checkpoints" / "recovery"), 50)
+            self.assertFalse((output / "checkpoints" / STAGING_NAME).exists())
+
+    def test_failed_swap_does_not_abort_and_keeps_the_previous_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            keeper = make_keeper(output, weights_every=10_000)
+            self.assertTrue(save_step(keeper, 20))
+            with mock.patch(
+                "mimic_arm.saving.atomic_promote",
+                side_effect=OSError(9, "Bad file descriptor"),
+            ):
+                self.assertFalse(save_step(keeper, 40))
+            self.assertEqual(read_training_step(output / "checkpoints" / "recovery"), 20)
+            staging = output / "checkpoints" / STAGING_NAME
+            self.assertEqual(read_training_step(staging), 40)
+            self.assertTrue((staging / ".mimic_arm_complete").is_file())
+            restored = reconcile_recovery(output / "checkpoints")
+            self.assertEqual(read_training_step(restored), 40)
 
 
 class SymlinkAndResumeDiscoveryTest(unittest.TestCase):

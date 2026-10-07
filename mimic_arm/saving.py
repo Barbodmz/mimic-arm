@@ -134,17 +134,54 @@ def tree_size(path: Path) -> int:
     return total
 
 
+def _fsync_open_flags() -> int:
+    """Flags for flushing a file.
+
+    On Windows, ``os.fsync`` of a descriptor opened with ``O_RDONLY`` raises
+    ``OSError: [Errno 9] Bad file descriptor``. Opening the same file with
+    ``O_RDWR`` flushes it. Other platforms keep the read-only open.
+    """
+    if sys.platform == "win32":
+        return os.O_RDWR
+    return os.O_RDONLY
+
+
+def _fsync_file(path: Path) -> OSError | None:
+    """Flush one file. Return the ``OSError`` instead of raising it."""
+    try:
+        fd = os.open(path, _fsync_open_flags())
+    except OSError as exc:
+        return exc
+    try:
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            return exc
+    finally:
+        os.close(fd)
+    return None
+
+
 def fsync_tree(root: Path) -> None:
-    """Flush a finished tree before renaming it into place."""
+    """Flush a finished tree before renaming it into place.
+
+    A flush that fails is logged once and ignored. The bytes are already in
+    the file, and aborting here used to kill a Windows training run at the
+    first recovery save (Errno 9) after the commit marker was written.
+    """
+    failure: OSError | None = None
     for dirpath, _dirnames, filenames in os.walk(root):
         for name in filenames:
-            fd = os.open(Path(dirpath) / name, os.O_RDONLY)
-            try:
-                os.fsync(fd)
-            finally:
-                os.close(fd)
+            error = _fsync_file(Path(dirpath) / name)
+            if error is not None and failure is None:
+                failure = error
         _fsync_dir(Path(dirpath))
     _fsync_dir(root.parent)
+    if failure is not None:
+        print(
+            f"WARNING: could not flush {root} to disk ({failure}). "
+            "The checkpoint files are still in place and training will continue."
+        )
 
 
 def _fsync_dir(path: Path) -> None:
@@ -375,10 +412,21 @@ class CheckpointKeeper:
 
         # LeRobot can leave training_step.json on disk before the optimizer
         # file is finished. The marker is the commit point, and it is written
-        # only after populate returns.
-        (staging / COMMIT_NAME).write_text("ok\n")
-        fsync_tree(staging)
-        atomic_promote(staging, self.checkpoints / RECOVERY_NAME)
+        # only after populate returns. Flush and rename stay inside this
+        # handler: a Windows fsync error or a failed swap must not kill the
+        # training process. A finished staging tree is adopted the next time
+        # a save starts.
+        try:
+            (staging / COMMIT_NAME).write_text("ok\n")
+            fsync_tree(staging)
+            atomic_promote(staging, self.checkpoints / RECOVERY_NAME)
+        except OSError as exc:
+            print(
+                "WARNING: recovery save could not be swapped into place "
+                f"({exc}). Training will continue. "
+                "A finished staging folder is reused the next time a save starts."
+            )
+            return False
         print(f"Recovery checkpoint updated at step {step}: {self.checkpoints / RECOVERY_NAME}")
         self._maybe_save_weights(step)
         return True

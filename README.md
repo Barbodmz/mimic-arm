@@ -70,6 +70,8 @@ export MUJOCO_GL=egl      # GPU
 
 Training keeps going if Windows cannot create the `checkpoints/last` symlink (WinError 1314, which happens without Developer Mode or an admin account). The real checkpoint is the directory `checkpoints/recovery`, not that shortcut. Rerunning the same `train.py` command resumes from it. Older runs that only have numbered folders still resume from the newest of those when `recovery` is missing. Evaluation defaults to `MUJOCO_GL=glfw`. A `MUJOCO_GL` value you set yourself is kept. Linux still picks `egl`, then `osmesa`.
 
+Flushing that recovery folder on Windows opens each file read/write. A read-only handle makes `os.fsync` raise `OSError: [Errno 9] Bad file descriptor` and used to kill the run at the first save. If a flush or the rename that publishes the checkpoint still fails, training logs a warning and continues. The previous recovery stays in place until a finished save can be swapped in.
+
 `--num-workers` defaults to 1 on Windows and 4 elsewhere. Each Windows worker is a fresh process that imports PyTorch again, and that commit charge counts against RAM plus the page file.
 
 A 60k run on a 6 GB laptop can still die with Windows error 1455 ("The paging file is too small for this operation to complete") even when the checkpoint itself fits. `train.py` cannot raise that limit. If a run dies with 1455, set a larger page file and reboot: Settings, System, About, Advanced system settings, Performance, Settings, Advanced, Virtual memory, Change. Uncheck automatic management, choose a drive that has free space, and set a custom size (16384 MB initial and 32768 MB maximum is a reasonable laptop choice). Then rerun the same training command. It continues from `checkpoints/recovery`.
