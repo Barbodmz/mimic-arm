@@ -75,6 +75,36 @@ def sample_transfer_cube_pose(
     )
 
 
+class ListedCubeSampler:
+    """Drop-in ``sample_box_pose`` that walks a fixed list of spots.
+
+    Episode seed ``s`` uses ``spots[s % len(spots)]``, so a 50-episode eval
+    cycles a shorter holdout list and every run with the same seed sees the
+    same cubes.
+    """
+
+    def __init__(self, spots: list[tuple[float, float]], *, source: str) -> None:
+        if not spots:
+            raise ValueError("The holdout spot list is empty.")
+        self.spots = tuple((float(x), float(y)) for x, y in spots)
+        xs = [spot[0] for spot in self.spots]
+        ys = [spot[1] for spot in self.spots]
+        self.x_range = (min(xs), max(xs))
+        self.y_range = (min(ys), max(ys))
+        self.exclude_default = False
+        self.source = source
+        self.spot_count = len(self.spots)
+        self.positions: dict[int, tuple[float, float]] = {}
+
+    def __call__(self, seed=None) -> np.ndarray:
+        key = _as_seed(seed)
+        if key is None:
+            raise ValueError("A holdout cube sampler needs a seed.")
+        x, y = self.spots[key % len(self.spots)]
+        self.positions[key] = (x, y)
+        return np.array([x, y, CUBE_Z, *CUBE_QUAT], dtype=np.float64)
+
+
 class RecordingCubeSampler:
     """Drop-in replacement for ``gym_aloha.env.sample_box_pose``.
 
@@ -107,18 +137,31 @@ class RecordingCubeSampler:
         return pose
 
 
+HOLDOUT_CUBE_RANGES = ("holdout-scattered", "holdout-far-y")
+
+
 def resolve_cube_sampler(
     cube_range: str,
     cube_x: tuple[float, float] | None,
     cube_y: tuple[float, float] | None,
-) -> RecordingCubeSampler | None:
+) -> RecordingCubeSampler | ListedCubeSampler | None:
     """Return a sampler, or None when evaluation should use gym-aloha's own.
 
     None is the default. The caller must not patch the environment in that
     case, so a normal eval stays on ``sample_box_pose``.
     """
-    if cube_range not in ("default", "outside"):
-        raise ValueError(f"cube_range must be 'default' or 'outside', got {cube_range!r}.")
+    allowed = ("default", "outside", *HOLDOUT_CUBE_RANGES)
+    if cube_range not in allowed:
+        raise ValueError(f"cube_range must be one of {allowed}, got {cube_range!r}.")
+    if cube_range in HOLDOUT_CUBE_RANGES:
+        if cube_x is not None or cube_y is not None:
+            raise ValueError(
+                f"{cube_range} reads its spots from the holdout file. "
+                "Leave --cube-x and --cube-y unset."
+            )
+        from mimic_arm.wider_spawn import HOLDOUTS_PATH, holdout_spots
+
+        return ListedCubeSampler(list(holdout_spots(cube_range)), source=str(HOLDOUTS_PATH))
     if (cube_x is None) != (cube_y is None):
         raise ValueError("Pass both cube x and cube y ranges, or neither.")
     if cube_range == "default" and cube_x is None:
@@ -133,9 +176,11 @@ def resolve_cube_sampler(
     return RecordingCubeSampler(x_range, y_range, exclude_default=exclude_default)
 
 
-def cube_sampling_record(sampler: RecordingCubeSampler, cube_range: str) -> dict:
+def cube_sampling_record(
+    sampler: RecordingCubeSampler | ListedCubeSampler, cube_range: str
+) -> dict:
     """JSON-ready description of the sampler that was installed."""
-    return {
+    record = {
         "mode": cube_range,
         "x": [sampler.x_range[0], sampler.x_range[1]],
         "y": [sampler.y_range[0], sampler.y_range[1]],
@@ -144,6 +189,11 @@ def cube_sampling_record(sampler: RecordingCubeSampler, cube_range: str) -> dict
         "default_y": [DEFAULT_Y_RANGE[0], DEFAULT_Y_RANGE[1]],
         "z": CUBE_Z,
     }
+    spot_count = getattr(sampler, "spot_count", None)
+    if spot_count is not None:
+        record["spot_count"] = int(spot_count)
+        record["source"] = getattr(sampler, "source", None)
+    return record
 
 
 def install_cube_sampler(sampler: Callable):

@@ -298,11 +298,14 @@ def add_eval_variant_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--cube-range",
-        choices=("default", "outside"),
+        choices=("default", "outside", "holdout-scattered", "holdout-far-y"),
         default="default",
         help=(
             "Where the red cube starts. 'default' is gym-aloha's sample_box_pose "
-            "(x 0.0-0.2, y 0.4-0.6). 'outside' is a 5 cm frame around that rectangle."
+            "(x 0.0-0.2, y 0.4-0.6). 'outside' is a 5 cm frame around that rectangle "
+            "(the original unseen-position comparison). 'holdout-scattered' and "
+            "'holdout-far-y' walk demo_sets/wider_spawn_holdouts.json. Seed s uses "
+            "spot s mod the list length, so each mode is its own run."
         ),
     )
     parser.add_argument(
@@ -400,15 +403,15 @@ def evaluate_checkpoint(
             "The ensembler resets at the start of each episode."
         )
     if cube_record is not None:
-        print(
+        line = (
             f"Cube positions: {cube_record['mode']}  "
             f"x {cube_record['x']}  y {cube_record['y']}"
-            + (
-                "  (training rectangle excluded)"
-                if cube_record["exclude_default"]
-                else ""
-            )
         )
+        if cube_record["exclude_default"]:
+            line += "  (training rectangle excluded)"
+        if cube_record.get("spot_count") is not None:
+            line += f"  ({cube_record['spot_count']} listed spots, {cube_record['source']})"
+        print(line)
 
     # Imports stay below the renderer setup. Importing lerobot pulls in
     # gym-aloha, which imports MuJoCo.

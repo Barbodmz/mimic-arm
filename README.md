@@ -208,12 +208,64 @@ python evaluate.py \
 | `--output-dir` | `outputs/eval/act_aloha_transfer_cube` | Videos and `eval_info.json` |
 | `--seed` | 1000 | Seed of the first episode |
 | `--temporal-ensemble` | off | ACT ensemble coefficient, for example `0.01`. Sets `n_action_steps` to 1 |
-| `--cube-range` | `default` | `outside` places the cube in a 5 cm frame around the training rectangle |
+| `--cube-range` | `default` | `outside` is the 5 cm frame. `holdout-scattered` and `holdout-far-y` walk the saved holdout lists |
 | `--cube-x`, `--cube-y` | off | Explicit cube ranges, `LO HI` in meters. Pass both |
 
 `--temporal-ensemble 0.01` is the coefficient from the ACT paper. The checkpoint is loaded with that value and `n_action_steps=1`, which is what LeRobot's ACT config requires. The network then runs on every simulator step instead of once per chunk of 100, and the ensemble state is cleared at the start of each episode. On this CPU, a normal 1-episode eval took 40.6 s. The same kind of run with `--temporal-ensemble 0.01` took 146.5 s and 143.4 s for 2 episodes (about 72 s each), 1.8 times as long per episode. The coefficient is printed and stored in `eval_info.json`. `compare.py` adds a `temporal_ensemble_coeff` column when you pass the flag.
 
 `--cube-range outside` moves the cube off the rectangle that gym-aloha's `sample_box_pose` uses: x from 0.0 to 0.2, y from 0.4 to 0.6, z fixed at 0.05. The outside range is a 5 cm frame around that rectangle, x from -0.05 to 0.25 and y from 0.35 to 0.65, skipping any sample that still falls inside. Five centimeters is far enough to leave the demonstrations, and the cube still sits on the table in view of the top camera. In the simulator those positions keep their x,y after the cube drops, rest at about z 0.02, and show a few hundred red pixels, like a cube inside the training rectangle. The far corner of the frame is about 0.73 m from the left arm base; the far corner of the training rectangle is already about 0.68 m, and the right arm is closer than that to every point in the frame. The same seed always picks the same spot, so two checkpoints see the same cubes. Each episode line includes that cube x, y. `--cube-x LO HI --cube-y LO HI` samples a rectangle you name instead. Leave both options off and the evaluation output matches a normal run.
+
+### Wider scripted demos
+
+`record_scripted_demos.py` records the scripted pick-and-handover. With no extra flags it uses gym-aloha's box, `sample_box_pose(seed + episode)`, and the stock mocap weld. `--wider-spawn` records the training list in `demo_sets/wider_spawn_holdouts.json`.
+
+The wider rectangle is the training box plus the same 5 cm band as `--cube-range outside`: x from -0.05 to 0.25, y from 0.35 to 0.65. A 2 cm grid over that rectangle has 256 spots. A spot is kept when the scripted policy finishes the handover in the end-effector sim (reward 4) and the joint replay does too. The survey stiffens the mocap weld (`solref 0.004`, `solimp 0.95 0.99`) so the gripper can track the waypoint; the stock weld leaves it about 7 cm short. 86 spots passed, 170 were rejected. 42 of the rejected spots reached reward 4 only in the joint replay, with the end-effector policy still at reward 2, and those stayed out. 38 of the 86 reachable spots sit in the outside band.
+
+Two groups stay out of the training demos:
+
+- Scattered holdout: 13 spots, `round(0.15 * 86)`, drawn with `numpy.random.RandomState(14)` from the reachable spots. The list is `scattered_holdout` in the JSON file.
+- Far-Y corner: the whole high-X, high-Y 5 cm square of the outside band, x in (0.2, 0.25] and y in (0.6, 0.65]. That is 9 grid points (`0.21/0.23/0.25` by `0.61/0.63/0.65`). The in-range misses on seeds 1024, 1038, 1047, and 1049 sat at about x 0.130–0.161 and y 0.569–0.599, on the way into this square. None of these 9 spots passed the reachability filter, so the corner eval is past what the scripted teacher can demonstrate.
+
+Training demos are the other 73 reachable spots. `demo_sets/wider_spawn_spots.png` plots training spots, the scattered holdout, the far-Y corner, and the rejected grid.
+
+`--cube-range holdout-scattered` and `--cube-range holdout-far-y` each walk one of those lists. Seed `s` uses spot `s mod length`, so a 50-episode run cycles the list. `--cube-range outside` is unchanged and stays the comparison run. The 70% bar belongs on the two holdout runs. The outside-band run places cubes inside the wider training area, so it is a comparison number.
+
+Regenerate the holdout file (this rolls all 256 spots; it does not record a dataset):
+
+```bash
+python record_scripted_demos.py --write-holdouts
+```
+
+Laptop commands. `STEPS` is a placeholder until the training length is chosen. Each eval is its own 50-episode run at seed 1000:
+
+```bash
+python record_scripted_demos.py --wider-spawn --output-dir outputs/data/scripted_wide
+
+python train.py --steps STEPS --batch-size 8 --device cuda --num-workers 1 \
+    --dataset.repo_id=local/scripted_wide \
+    --dataset.root=outputs/data/scripted_wide \
+    --recovery-every 2000 --weights-every 10000 --min-free-gb 1 \
+    --env_eval_freq=0 \
+    --output-dir outputs/train/act_scripted_wide
+
+python evaluate.py \
+    --checkpoint outputs/train/act_scripted_wide/checkpoints/recovery/pretrained_model \
+    --episodes 50 --seed 1000 --device cuda \
+    --cube-range holdout-scattered \
+    --output-dir outputs/eval/scripted_wide_holdout_scattered
+
+python evaluate.py \
+    --checkpoint outputs/train/act_scripted_wide/checkpoints/recovery/pretrained_model \
+    --episodes 50 --seed 1000 --device cuda \
+    --cube-range holdout-far-y \
+    --output-dir outputs/eval/scripted_wide_holdout_far_y
+
+python evaluate.py \
+    --checkpoint outputs/train/act_scripted_wide/checkpoints/recovery/pretrained_model \
+    --episodes 50 --seed 1000 --device cuda \
+    --cube-range outside \
+    --output-dir outputs/eval/scripted_wide_outside_compare
+```
 
 ### Compare checkpoints
 
@@ -368,6 +420,9 @@ pyproject.toml           project metadata
 train.py                 train ACT on the transfer-cube dataset
 evaluate.py              roll the policy out in AlohaTransferCube
 compare.py               score several checkpoints on the same episodes
+record_scripted_demos.py record scripted demos; --wider-spawn uses the holdout file
+demo_sets/wider_spawn_holdouts.json  training spots and the two holdout lists
+demo_sets/wider_spawn_spots.png      plot of those spots
 mimic_arm/mujoco_gl.py   pick EGL or OSMesa before MuJoCo imports
 mimic_arm/ensure_labmaze.py  labmaze placeholder when Python 3.13 has no wheel
 mimic_arm/checkpoints.py find a pretrained_model folder or list step checkpoints
