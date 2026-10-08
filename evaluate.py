@@ -56,6 +56,7 @@ if str(ROOT) not in sys.path:
 
 from mimic_arm.checkpoints import checkpoint_step, resolve_checkpoint
 from mimic_arm.cube_pose import cube_sampling_record, install_cube_sampler, resolve_cube_sampler
+from mimic_arm.wider_spawn import holdout_spots
 from mimic_arm.mujoco_gl import configure_mujoco_rendering
 
 ENV_TASK = "AlohaTransferCube-v0"
@@ -239,8 +240,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--episodes",
         type=int,
-        default=20,
-        help="How many simulated episodes to run. Default: 20.",
+        default=None,
+        help=(
+            "How many simulated episodes to run. Default: 20, or one per "
+            "shifted scattered-holdout position when --cube-range is holdout-scattered."
+        ),
     )
     parser.add_argument(
         "--videos",
@@ -303,9 +307,10 @@ def add_eval_variant_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "Where the red cube starts. 'default' is gym-aloha's sample_box_pose "
             "(x 0.0-0.2, y 0.4-0.6). 'outside' is a 5 cm frame around that rectangle "
-            "(the original unseen-position comparison). 'holdout-scattered' and "
-            "'holdout-far-y' walk demo_sets/wider_spawn_holdouts.json. Seed s uses "
-            "spot s mod the list length, so each mode is its own run."
+            "(the original unseen-position comparison). 'holdout-scattered' walks "
+            "the shifted positions in demo_sets/wider_spawn_holdouts.json, one "
+            "episode per position when --episodes is omitted. 'holdout-far-y' "
+            "walks the far-Y corner. Seed s uses list index s mod length."
         ),
     )
     parser.add_argument(
@@ -572,11 +577,24 @@ def evaluate_checkpoint(
     }
 
 
+def resolve_episode_count(episodes: int | None, cube_range: str) -> int:
+    """Episode count for one eval run.
+
+    Scattered holdout eval walks the saved shifts once when ``--episodes``
+    is omitted. Every other mode stays at 20.
+    """
+    if episodes is not None:
+        return episodes
+    if cube_range == "holdout-scattered":
+        return len(holdout_spots("holdout-scattered"))
+    return 20
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     evaluate_checkpoint(
         args.checkpoint,
-        episodes=args.episodes,
+        episodes=resolve_episode_count(args.episodes, args.cube_range),
         videos=args.videos,
         batch_size=args.batch_size,
         device=args.device,

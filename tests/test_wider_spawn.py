@@ -19,6 +19,7 @@ from mimic_arm.cube_pose import (
     resolve_cube_sampler,
     sample_transfer_cube_pose,
 )
+from mimic_arm.saving import step_dirname
 from mimic_arm.wider_spawn import (
     FAR_Y_CORNER_X,
     FAR_Y_CORNER_Y,
@@ -27,16 +28,21 @@ from mimic_arm.wider_spawn import (
     HOLDOUT_SEED,
     HOLDOUTS_PATH,
     LEAK_TOLERANCE_M,
+    SHIFT_MAX_M,
+    SHIFTS_PER_SPOT,
     assign_holdouts,
     candidate_spots,
     demo_cube_pose,
+    holdout_spots,
     in_far_y_corner,
     leak_pairs,
     load_spawn_plan,
     pose_from_xy,
     sample_box_pose_gym,
+    shift_distance_ok,
     wider_training_poses,
 )
+from evaluate import resolve_episode_count
 from record_scripted_demos import build_parser, episode_count
 
 
@@ -45,6 +51,7 @@ class WiderSpawnTest(unittest.TestCase):
         args = build_parser().parse_args([])
         self.assertFalse(args.wider_spawn)
         self.assertFalse(args.write_holdouts)
+        self.assertFalse(args.write_shifts)
         self.assertIsNone(args.episodes)
         self.assertEqual(args.seed, 0)
 
@@ -176,6 +183,15 @@ class WiderSpawnTest(unittest.TestCase):
         ]
         self.assertGreater(min(distances), 0.01)
 
+        shifts = holdout_spots("holdout-scattered")
+        self.assertEqual(leak_pairs(training, shifts, LEAK_TOLERANCE_M), [])
+        shift_gaps = [
+            float(np.hypot(tx - hx, ty - hy))
+            for tx, ty in training
+            for hx, hy in shifts
+        ]
+        self.assertGreater(min(shift_gaps), LEAK_TOLERANCE_M)
+
         leaked = list(training)
         leaked.append(holdouts[0])
         found = leak_pairs(leaked, holdouts, LEAK_TOLERANCE_M)
@@ -202,10 +218,12 @@ class WiderSpawnTest(unittest.TestCase):
         scattered = resolve_cube_sampler("holdout-scattered", None, None)
         corner = resolve_cube_sampler("holdout-far-y", None, None)
         assert scattered is not None and corner is not None
-        for seed in range(1000, 1050):
-            pose = scattered(seed)
-            spot = (float(pose[0]), float(pose[1]))
-            self.assertEqual(spot, plan.scattered[seed % len(plan.scattered)])
+        shifts = holdout_spots("holdout-scattered")
+        self.assertEqual(len(shifts), scattered.spot_count)
+        for index, spot in enumerate(shifts):
+            pose = scattered(index)
+            self.assertEqual((float(pose[0]), float(pose[1])), spot)
+        for seed in range(1000, 1003):
             pose = corner(seed)
             spot = (float(pose[0]), float(pose[1]))
             self.assertEqual(spot, plan.far_y_corner[seed % len(plan.far_y_corner)])
@@ -216,7 +234,7 @@ class WiderSpawnTest(unittest.TestCase):
             "exclude_default": scattered.exclude_default,
         }
         self.assertEqual(record["exclude_default"], False)
-        self.assertEqual(scattered.spot_count, len(plan.scattered))
+        self.assertEqual(scattered.spot_count, len(holdout_spots("holdout-scattered")))
         self.assertIn("wider_spawn_holdouts.json", scattered.source)
 
     def test_holdout_ranges_reject_explicit_bounds(self) -> None:
@@ -239,6 +257,59 @@ class WiderSpawnTest(unittest.TestCase):
             )
             np.testing.assert_array_equal(pose, direct)
             self.assertFalse(in_default_box(float(pose[0]), float(pose[1])))
+
+    def test_shifted_positions_stay_closer_to_their_anchor(self) -> None:
+        plan = load_spawn_plan(HOLDOUTS_PATH)
+        rows = plan.raw["scattered_shifts"]["positions"]
+        self.assertGreaterEqual(len(rows), len(plan.scattered))
+        per_anchor: dict[tuple[float, float], int] = {}
+        for row in rows:
+            point = (float(row["x"]), float(row["y"]))
+            anchor = (float(row["anchor"][0]), float(row["anchor"][1]))
+            self.assertIn(anchor, set(plan.scattered))
+            self.assertTrue(shift_distance_ok(point, anchor, plan.training, max_shift_m=SHIFT_MAX_M))
+            dist_own = float(np.hypot(point[0] - anchor[0], point[1] - anchor[1]))
+            dist_train = min(
+                float(np.hypot(point[0] - tx, point[1] - ty)) for tx, ty in plan.training
+            )
+            self.assertLess(dist_own, dist_train)
+            self.assertLessEqual(dist_own, SHIFT_MAX_M)
+            self.assertGreater(dist_train, LEAK_TOLERANCE_M)
+            per_anchor[anchor] = per_anchor.get(anchor, 0) + 1
+        short = plan.raw["scattered_shifts"]["shortfalls"]
+        short_anchors = {tuple(item["anchor"]) for item in short}
+        for anchor in plan.scattered:
+            got = per_anchor.get(anchor, 0)
+            if anchor in short_anchors:
+                self.assertLess(got, SHIFTS_PER_SPOT)
+            else:
+                self.assertEqual(got, SHIFTS_PER_SPOT)
+
+        # A point past 1 cm, or closer to a training spot, is not a valid shift.
+        anchor = plan.scattered[0]
+        self.assertFalse(
+            shift_distance_ok((anchor[0] + 0.012, anchor[1]), anchor, plan.training)
+        )
+        training_spot = plan.training[0]
+        self.assertFalse(
+            shift_distance_ok(
+                (training_spot[0] + 0.001, training_spot[1]),
+                anchor,
+                plan.training,
+            )
+        )
+
+    def test_scattered_eval_defaults_to_one_episode_per_shift(self) -> None:
+        count = len(holdout_spots("holdout-scattered"))
+        self.assertEqual(resolve_episode_count(None, "holdout-scattered"), count)
+        self.assertEqual(resolve_episode_count(None, "holdout-far-y"), 20)
+        self.assertEqual(resolve_episode_count(None, "outside"), 20)
+        self.assertEqual(resolve_episode_count(50, "holdout-scattered"), 50)
+
+    def test_fifty_k_weights_folder_is_zero_padded(self) -> None:
+        self.assertEqual(step_dirname(50_000, 100_000), "050000")
+        self.assertEqual(step_dirname(100_000, 100_000), "100000")
+        self.assertEqual(step_dirname(50_000, 50_000), "050000")
 
     def test_in_box_grid_clears_the_sanity_gate(self) -> None:
         try:

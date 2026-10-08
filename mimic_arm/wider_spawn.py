@@ -43,6 +43,13 @@ HOLDOUT_SEED = 14
 # Half the grid step. A leaked spot sits on this grid, so anything closer
 # than 5 mm is that spot and not a neighbor 2 cm away.
 LEAK_TOLERANCE_M = 0.005
+# Three shifts per scattered anchor. 9 mm stays under 1 cm, and under half
+# the 2 cm grid, so a shift is closer to its own anchor than to a neighbor.
+SHIFTS_PER_SPOT = 3
+SHIFT_SEED = 14
+SHIFT_MIN_M = 0.002
+SHIFT_MAX_M = 0.009
+SHIFT_ATTEMPTS = 40
 
 # Far-Y corner of the outside band: the 5 cm square past both the high-Y
 # edge (y = 0.6) and the high-X edge (x = 0.2). Edges of the training
@@ -297,11 +304,64 @@ def wider_training_poses(episode_count: int | None = None) -> list[np.ndarray]:
     return [demo_cube_pose(i, wider_spawn=True, seed=0) for i in range(count)]
 
 
+def shift_distance_ok(
+    point: tuple[float, float],
+    anchor: tuple[float, float],
+    training: list[tuple[float, float]] | tuple,
+    *,
+    max_shift_m: float = SHIFT_MAX_M,
+    tolerance_m: float = LEAK_TOLERANCE_M,
+) -> bool:
+    """True when ``point`` is a safe shift of ``anchor`` relative to training.
+
+    The shift stays within ``max_shift_m``, is strictly closer to ``anchor``
+    than to any training spot, and stays farther than ``tolerance_m`` from
+    every training spot.
+    """
+    px, py = float(point[0]), float(point[1])
+    dist_own = float(np.hypot(px - float(anchor[0]), py - float(anchor[1])))
+    if dist_own <= 0.0 or dist_own > max_shift_m + 1e-9:
+        return False
+    if not training:
+        return True
+    dist_train = min(
+        float(np.hypot(px - float(tx), py - float(ty))) for tx, ty in training
+    )
+    if dist_train <= tolerance_m:
+        return False
+    return dist_own < dist_train
+
+
+def propose_shift(
+    anchor: tuple[float, float],
+    rng: np.random.RandomState,
+    *,
+    min_shift_m: float = SHIFT_MIN_M,
+    max_shift_m: float = SHIFT_MAX_M,
+) -> tuple[float, float]:
+    """One offset inside the annulus around ``anchor``. Rounding stays inside it."""
+    for _ in range(100):
+        angle = float(rng.uniform(0.0, 2.0 * np.pi))
+        radius = float(rng.uniform(min_shift_m, max_shift_m))
+        x = round(float(anchor[0]) + radius * float(np.cos(angle)), 5)
+        y = round(float(anchor[1]) + radius * float(np.sin(angle)), 5)
+        distance = float(np.hypot(x - float(anchor[0]), y - float(anchor[1])))
+        if min_shift_m - 1e-6 <= distance <= max_shift_m + 1e-9:
+            return (x, y)
+    raise RuntimeError(f"Could not draw a shift around {anchor}.")
+
+
 def holdout_spots(which: str) -> tuple[tuple[float, float], ...]:
-    """``scattered`` or ``far-y`` list from the checked-in file."""
+    """Eval list for ``scattered`` (the shifts) or ``far-y`` (the corner)."""
     plan = load_spawn_plan()
     if which in ("scattered", "holdout-scattered"):
-        return plan.scattered
+        rows = plan.raw.get("scattered_shifts", {}).get("positions")
+        if not rows:
+            raise RuntimeError(
+                f"{HOLDOUTS_PATH} has no scattered_shifts.positions. "
+                "Run record_scripted_demos.py --write-shifts."
+            )
+        return tuple((float(row["x"]), float(row["y"])) for row in rows)
     if which in ("far-y", "far_y", "holdout-far-y"):
         return plan.far_y_corner
     raise ValueError(f"Unknown holdout list {which!r}.")
@@ -344,6 +404,16 @@ def plot_spawn_plan(plan: SpawnPlan, path: Path) -> Path:
     scatter(plan.rejected, s=18, c="#d0d0d0", marker="x", linewidths=0.6, label=f"rejected ({len(plan.rejected)})", zorder=1)
     scatter(plan.training, s=28, c="#1f77b4", marker="o", label=f"training ({len(plan.training)})", zorder=2)
     scatter(plan.scattered, s=46, c="#ff7f0e", marker="^", label=f"scattered holdout ({len(plan.scattered)})", zorder=3)
+    shift_rows = plan.raw.get("scattered_shifts", {}).get("positions") or []
+    shift_spots = tuple((float(row["x"]), float(row["y"])) for row in shift_rows)
+    scatter(
+        shift_spots,
+        s=14,
+        c="#ffbb78",
+        marker=".",
+        label=f"scattered shifts ({len(shift_spots)})",
+        zorder=3,
+    )
     scatter(
         plan.far_y_corner,
         s=42,

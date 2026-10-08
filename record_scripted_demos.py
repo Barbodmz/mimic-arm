@@ -30,6 +30,8 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -37,11 +39,17 @@ if str(ROOT) not in sys.path:
 from mimic_arm.wider_spawn import (
     HOLDOUTS_PATH,
     PLOT_PATH,
+    SHIFT_ATTEMPTS,
+    SHIFT_MAX_M,
+    SHIFT_SEED,
+    SHIFTS_PER_SPOT,
     build_plan_payload,
     demo_cube_pose,
     load_spawn_plan,
     plot_spawn_plan,
+    propose_shift,
     save_spawn_plan,
+    shift_distance_ok,
 )
 
 DEFAULT_EPISODES = 50
@@ -109,6 +117,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--write-holdouts",
         action="store_true",
         help=f"Survey the wider grid and rewrite {HOLDOUTS_PATH.name}. Does not record demos.",
+    )
+    parser.add_argument(
+        "--write-shifts",
+        action="store_true",
+        help=(
+            "Add three reachable shifts around each scattered holdout in the "
+            "checked-in file. Does not record demos or move the anchors."
+        ),
     )
     return parser
 
@@ -192,6 +208,81 @@ def write_holdouts() -> dict:
         f"training {payload['training_count']}"
     )
     return payload
+
+
+def write_shifts() -> dict:
+    """Three stock-env successes near each scattered anchor. Anchors stay put."""
+    from mimic_arm.mujoco_gl import configure_mujoco_rendering
+    from mimic_arm.scripted_rollout import scripted_success
+
+    configure_mujoco_rendering()
+    plan = load_spawn_plan()
+    rng = np.random.RandomState(SHIFT_SEED)
+    positions: list[dict] = []
+    shortfalls: list[dict] = []
+    training = list(plan.training)
+    print(
+        f"Shifting {len(plan.scattered)} scattered anchors, "
+        f"{SHIFTS_PER_SPOT} each, seed {SHIFT_SEED}.",
+        flush=True,
+    )
+    for index, anchor in enumerate(plan.scattered, start=1):
+        got: list[tuple[float, float]] = []
+        tries = 0
+        while len(got) < SHIFTS_PER_SPOT and tries < SHIFT_ATTEMPTS:
+            tries += 1
+            point = propose_shift(anchor, rng)
+            if not shift_distance_ok(point, anchor, training):
+                continue
+            if any(
+                float(np.hypot(point[0] - prev[0], point[1] - prev[1])) < 0.001
+                for prev in got
+            ):
+                continue
+            if not scripted_success(point[0], point[1], stiff_weld=True):
+                continue
+            got.append(point)
+        if len(got) < SHIFTS_PER_SPOT:
+            shortfalls.append(
+                {"anchor": [anchor[0], anchor[1]], "got": len(got), "tries": tries}
+            )
+            print(
+                f"anchor {index}/{len(plan.scattered)} {anchor} "
+                f"got {len(got)}/{SHIFTS_PER_SPOT} after {tries} tries",
+                flush=True,
+            )
+        else:
+            print(f"anchor {index}/{len(plan.scattered)} {anchor} got {len(got)}", flush=True)
+        for point in got:
+            positions.append(
+                {"x": point[0], "y": point[1], "anchor": [anchor[0], anchor[1]]}
+            )
+    payload = dict(plan.raw)
+    payload["scattered_shifts"] = {
+        "seed": SHIFT_SEED,
+        "per_spot": SHIFTS_PER_SPOT,
+        "max_shift_m": SHIFT_MAX_M,
+        "attempts_per_spot": SHIFT_ATTEMPTS,
+        "count": len(positions),
+        "shortfalls": shortfalls,
+        "note": (
+            "Eval positions for --cube-range holdout-scattered. Each row is a "
+            "shift of its anchor. Order is anchor order, then acceptance order. "
+            "An anchor that cannot collect per_spot successes stays on that "
+            "anchor; it is not replaced."
+        ),
+        "positions": positions,
+    }
+    path = save_spawn_plan(payload)
+    plot_spawn_plan(load_spawn_plan(path), PLOT_PATH)
+    try:
+        plot_spawn_plan(load_spawn_plan(path), ARTIFACT_PLOT)
+    except OSError as exc:
+        print(f"Artifact plot skipped: {exc}")
+    print(f"Wrote {len(positions)} shifts to {path}")
+    if shortfalls:
+        print(f"Shortfalls: {shortfalls}")
+    return payload["scattered_shifts"]
 
 
 def _write_positions(path: Path, rows: list[dict]) -> None:
@@ -289,10 +380,13 @@ def record_demos(
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
-    if args.write_holdouts:
+    if args.write_holdouts or args.write_shifts:
         if args.wider_spawn or args.episodes is not None:
-            raise SystemExit("--write-holdouts only rebuilds the holdout file.")
-        write_holdouts()
+            raise SystemExit("--write-holdouts and --write-shifts only update the holdout file.")
+        if args.write_holdouts:
+            write_holdouts()
+        if args.write_shifts:
+            write_shifts()
         return
     output_dir = args.output_dir or default_output_dir(args.wider_spawn)
     repo_id = args.repo_id or default_repo_id(args.wider_spawn)

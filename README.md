@@ -223,22 +223,25 @@ The wider rectangle is the training box plus the same 5 cm band as `--cube-range
 
 Two groups stay out of the training demos:
 
-- Scattered holdout: 36 spots, `round(0.15 * 242)`, drawn with `numpy.random.RandomState(14)` from the reachable spots outside the far-Y corner. The list is `scattered_holdout` in the JSON file.
+- Scattered holdout: 36 spots, `round(0.15 * 242)`, drawn with `numpy.random.RandomState(14)` from the reachable spots outside the far-Y corner. The list is `scattered_holdout` in the JSON file. Eval uses three shifts around each of those 36, 108 positions in `scattered_shifts`, drawn with seed 14 and kept only when the stock joint replay reaches reward 4. Each shift is within 9 mm of its own anchor, strictly closer to that anchor than to any training spot, and farther than 5 mm from every training spot.
 - Far-Y corner: the same high-X, high-Y square as before, x in (0.2, 0.25] and y in (0.6, 0.65] (9 grid points). Three of them pass the stock replay and are the corner eval: (0.21, 0.61), (0.21, 0.63), (0.23, 0.61). The other six, (0.21, 0.65), (0.23, 0.63), (0.23, 0.65), (0.25, 0.61), (0.25, 0.63), and (0.25, 0.65), fail it, so they are in neither training nor eval. The bounds are unchanged.
 
-Training demos are the other 203 reachable spots. `demo_sets/wider_spawn_spots.png` plots training spots, the scattered holdout, the reachable far-Y corner, and the rejected grid.
+Training demos are the other 203 reachable spots. `demo_sets/wider_spawn_spots.png` plots training spots, the 36 scattered anchors, the 108 shifts, the reachable far-Y corner, and the rejected grid.
 
 `train.py` still defaults to the published dataset. Wider demos are used only when you pass `--dataset.repo_id` and `--dataset.root` for a set recorded with `--wider-spawn`.
 
-`--cube-range holdout-scattered` and `--cube-range holdout-far-y` each walk one of those lists. Seed `s` uses spot `s mod length`, so a 50-episode run cycles the list. `--cube-range outside` is unchanged and stays the comparison run. The 70% bar belongs on the two holdout runs. The outside-band run places cubes inside the wider training area, so it is a comparison number.
+`--cube-range holdout-scattered` walks the 108 shifted positions in file order. Seed `s` uses position `s mod 108`, so `--episodes 108` covers each shift once. Omitting `--episodes` uses that same count. `--cube-range holdout-far-y` still walks the three reachable corner spots; a 50-episode run cycles them. `--cube-range outside` is unchanged and stays the comparison run. The 70% bar belongs on the two holdout runs. The outside-band run places cubes inside the wider training area, so it is a comparison number.
 
-Regenerate the holdout file (this rolls all 256 spots; it does not record a dataset):
+Permanent weights from `train.py` land in `checkpoints/weights/<step>/pretrained_model`. The step folder is zero-padded to at least six digits (`050000`, `100000`) when the finish line is 100,000 or 50,000. `checkpoints/recovery/pretrained_model` is only the latest step, so a 50k snapshot has to be the weights folder.
+
+Regenerate the holdout file, then the shifts (the second command does not move the 36 anchors):
 
 ```bash
 python record_scripted_demos.py --write-holdouts
+python record_scripted_demos.py --write-shifts
 ```
 
-Laptop commands. `STEPS` is a placeholder until the training length is chosen. Each eval is its own 50-episode run at seed 1000:
+Laptop commands. `--steps 100000` with `--weights-every 10000` writes `weights/050000` on the way to `weights/100000`. Scattered eval is 108 episodes, one per shift. Far-Y and the outside comparison stay at 50. Seed 1000.
 
 ```bash
 python record_scripted_demos.py --wider-spawn --output-dir outputs/data/scripted_wide
@@ -250,23 +253,43 @@ python train.py --steps STEPS --batch-size 8 --device cuda --num-workers 1 \
     --env_eval_freq=0 \
     --output-dir outputs/train/act_scripted_wide
 
+# 50k weights. Folder name is the six-digit step, not recovery.
 python evaluate.py \
-    --checkpoint outputs/train/act_scripted_wide/checkpoints/recovery/pretrained_model \
-    --episodes 50 --seed 1000 --device cuda \
+    --checkpoint outputs/train/act_scripted_wide/checkpoints/weights/050000/pretrained_model \
+    --episodes 108 --seed 1000 --device cuda \
     --cube-range holdout-scattered \
-    --output-dir outputs/eval/scripted_wide_holdout_scattered
+    --output-dir outputs/eval/scripted_wide_50k_holdout_scattered
 
 python evaluate.py \
-    --checkpoint outputs/train/act_scripted_wide/checkpoints/recovery/pretrained_model \
+    --checkpoint outputs/train/act_scripted_wide/checkpoints/weights/050000/pretrained_model \
     --episodes 50 --seed 1000 --device cuda \
     --cube-range holdout-far-y \
-    --output-dir outputs/eval/scripted_wide_holdout_far_y
+    --output-dir outputs/eval/scripted_wide_50k_holdout_far_y
 
 python evaluate.py \
-    --checkpoint outputs/train/act_scripted_wide/checkpoints/recovery/pretrained_model \
+    --checkpoint outputs/train/act_scripted_wide/checkpoints/weights/050000/pretrained_model \
     --episodes 50 --seed 1000 --device cuda \
     --cube-range outside \
-    --output-dir outputs/eval/scripted_wide_outside_compare
+    --output-dir outputs/eval/scripted_wide_50k_outside_compare
+
+# 100k weights, same naming. recovery/pretrained_model is only the latest step.
+python evaluate.py \
+    --checkpoint outputs/train/act_scripted_wide/checkpoints/weights/100000/pretrained_model \
+    --episodes 108 --seed 1000 --device cuda \
+    --cube-range holdout-scattered \
+    --output-dir outputs/eval/scripted_wide_100k_holdout_scattered
+
+python evaluate.py \
+    --checkpoint outputs/train/act_scripted_wide/checkpoints/weights/100000/pretrained_model \
+    --episodes 50 --seed 1000 --device cuda \
+    --cube-range holdout-far-y \
+    --output-dir outputs/eval/scripted_wide_100k_holdout_far_y
+
+python evaluate.py \
+    --checkpoint outputs/train/act_scripted_wide/checkpoints/weights/100000/pretrained_model \
+    --episodes 50 --seed 1000 --device cuda \
+    --cube-range outside \
+    --output-dir outputs/eval/scripted_wide_100k_outside_compare
 ```
 
 ### Compare checkpoints
