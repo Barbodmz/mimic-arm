@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import io
+import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -42,8 +47,15 @@ from mimic_arm.wider_spawn import (
     shift_distance_ok,
     wider_training_poses,
 )
-from evaluate import resolve_episode_count
-from record_scripted_demos import build_parser, episode_count
+from evaluate import (
+    attach_cube_positions,
+    format_spot_report,
+    per_episode_rows,
+    resolve_episode_count,
+    spot_success_rows,
+    write_eval_info,
+)
+from record_scripted_demos import build_parser, episode_count, record_demos
 
 
 class WiderSpawnTest(unittest.TestCase):
@@ -227,6 +239,10 @@ class WiderSpawnTest(unittest.TestCase):
             pose = corner(seed)
             spot = (float(pose[0]), float(pose[1]))
             self.assertEqual(spot, plan.far_y_corner[seed % len(plan.far_y_corner)])
+        recorded = dict(corner.positions)
+        unseeded = corner(None)
+        self.assertEqual(corner.positions, recorded)
+        self.assertIn((float(unseeded[0]), float(unseeded[1])), corner.spots)
         record = {
             "mode": "holdout-scattered",
             "x": list(scattered.x_range),
@@ -302,9 +318,14 @@ class WiderSpawnTest(unittest.TestCase):
     def test_scattered_eval_defaults_to_one_episode_per_shift(self) -> None:
         count = len(holdout_spots("holdout-scattered"))
         self.assertEqual(resolve_episode_count(None, "holdout-scattered"), count)
-        self.assertEqual(resolve_episode_count(None, "holdout-far-y"), 20)
+        self.assertEqual(
+            resolve_episode_count(None, "holdout-far-y"),
+            len(holdout_spots("holdout-far-y")),
+        )
+        self.assertEqual(resolve_episode_count(None, "holdout-far-y"), 3)
         self.assertEqual(resolve_episode_count(None, "outside"), 20)
         self.assertEqual(resolve_episode_count(50, "holdout-scattered"), 50)
+        self.assertEqual(resolve_episode_count(50, "holdout-far-y"), 50)
 
     def test_fifty_k_weights_folder_is_zero_padded(self) -> None:
         self.assertEqual(step_dirname(50_000, 100_000), "050000")
@@ -336,6 +357,196 @@ class WiderSpawnTest(unittest.TestCase):
         self.assertEqual(stock["frames"][0]["action"].shape, (14,))
         self.assertTrue(scripted_success(-0.05, 0.5, stiff_weld=True))
         self.assertFalse(scripted_success(0.25, 0.65, stiff_weld=True))
+
+    def test_flag_off_skips_failed_demos_and_keeps_the_stock_weld(self) -> None:
+        rolls = {"n": 0, "stiff": []}
+
+        def roll(pose, *, stiff_weld):
+            rolls["n"] += 1
+            rolls["stiff"].append(stiff_weld)
+            success = rolls["n"] == 2
+            return {
+                "success": success,
+                "joint_reward": 4 if success else 1,
+                "frames": [],
+            }
+
+        stored = []
+
+        def store(dataset, frames, episode_index):
+            del dataset, frames
+            stored.append(episode_index)
+
+        def open_ds(repo_id, output_dir):
+            del repo_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+            return dataset
+
+        dataset = Mock()
+        stdout = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "scripted"
+            with (
+                patch("record_scripted_demos.open_dataset", side_effect=open_ds),
+                patch("record_scripted_demos.roll_one", side_effect=roll),
+                patch("record_scripted_demos._store_episode", side_effect=store),
+                patch("sys.stdout", stdout),
+            ):
+                record_demos(
+                    wider_spawn=False,
+                    episodes=3,
+                    seed=0,
+                    output_dir=output,
+                    repo_id="local/scripted",
+                )
+            positions = json.loads((output / "cube_positions.json").read_text())
+        self.assertEqual(rolls["stiff"], [False, False, False])
+        self.assertEqual(stored, [1])
+        dataset.finalize.assert_called_once()
+        self.assertIn("Attempted 3 episodes, saved 1.", stdout.getvalue())
+        self.assertEqual(len(positions), 1)
+        self.assertTrue(positions[0]["success"])
+        self.assertEqual(positions[0]["attempt"], 1)
+
+    def test_finalize_does_not_hide_a_failed_wider_demo(self) -> None:
+        def roll(pose, *, stiff_weld):
+            self.assertTrue(stiff_weld)
+            return {"success": False, "joint_reward": 2, "frames": []}
+
+        dataset = Mock()
+        dataset.finalize.side_effect = RuntimeError("finalize hid this")
+        stdout = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "scripted_wide"
+            with (
+                patch("record_scripted_demos.open_dataset", return_value=dataset),
+                patch("record_scripted_demos.roll_one", side_effect=roll),
+                patch("record_scripted_demos._store_episode") as store,
+                patch("sys.stdout", stdout),
+            ):
+                with self.assertRaises(RuntimeError) as caught:
+                    record_demos(
+                        wider_spawn=True,
+                        episodes=1,
+                        seed=0,
+                        output_dir=output,
+                        repo_id="local/scripted_wide",
+                    )
+        self.assertIn("did not finish the handover", str(caught.exception))
+        self.assertNotIn("finalize hid this", str(caught.exception))
+        self.assertIn("Attempted 1 episodes, saved 0.", stdout.getvalue())
+        store.assert_not_called()
+        dataset.finalize.assert_called_once()
+
+    def test_holdout_scattered_vector_env_writes_eval_info(self) -> None:
+        self._assert_holdout_vector_eval("holdout-scattered")
+
+    def test_holdout_far_y_vector_env_writes_eval_info(self) -> None:
+        self._assert_holdout_vector_eval("holdout-far-y")
+
+    def _assert_holdout_vector_eval(self, cube_range: str) -> None:
+        """One real episode through the SyncVectorEnv path evaluate.py uses.
+
+        LeRobot's ``AlohaEnv.create_envs`` builds ``gym.vector.SyncVectorEnv``
+        with ``AutoresetMode.SAME_STEP`` when ``n_envs`` is 1. That autoreset
+        calls ``reset()`` with no seed at the end of the episode. A zero
+        action stands in for the policy. ``max_episode_steps`` is 1 so the
+        episode truncates on the first step.
+        """
+        from mimic_arm.mujoco_gl import configure_mujoco_rendering
+
+        # MuJoCo reads MUJOCO_GL at import time. Set it before gym-aloha.
+        # ``disable`` cannot draw the top camera that this env's observation
+        # includes, so a headless machine uses OSMesa for this episode.
+        chosen = configure_mujoco_rendering()
+        if chosen == "disable":
+            os.environ["MUJOCO_GL"] = "osmesa"
+            os.environ["PYOPENGL_PLATFORM"] = "osmesa"
+        try:
+            import gymnasium as gym
+            from gymnasium.vector import AutoresetMode
+        except ImportError:
+            self.skipTest("gymnasium is not installed")
+        try:
+            import gym_aloha  # noqa: F401
+        except ImportError:
+            self.skipTest("gym_aloha is not installed")
+
+        from mimic_arm.cube_pose import install_cube_sampler
+        sampler = resolve_cube_sampler(cube_range, None, None)
+        assert sampler is not None
+        none_calls = {"n": 0}
+        inner = sampler
+
+        def counting(seed=None):
+            if seed is None:
+                none_calls["n"] += 1
+            return inner(seed)
+
+        counting.positions = inner.positions
+        counting.spot_count = inner.spot_count
+
+        def _make_one():
+            return gym.make(
+                "gym_aloha/AlohaTransferCube-v0",
+                disable_env_checker=True,
+                obs_type="pixels_agent_pos",
+                render_mode="rgb_array",
+                max_episode_steps=1,
+            )
+
+        start_seed = 1000
+        envs = gym.vector.SyncVectorEnv(
+            [_make_one],
+            autoreset_mode=AutoresetMode.SAME_STEP,
+        )
+        try:
+            with install_cube_sampler(counting):
+                envs.reset(seed=start_seed)
+                action = np.zeros(envs.action_space.shape, dtype=np.float32)
+                _obs, _reward, _terminated, truncated, _info = envs.step(action)
+        finally:
+            envs.close()
+
+        self.assertTrue(bool(truncated[0]))
+        self.assertGreaterEqual(none_calls["n"], 1)
+        self.assertEqual(set(inner.positions), {start_seed})
+        expected = holdout_spots(cube_range)[start_seed % len(holdout_spots(cube_range))]
+        self.assertEqual(inner.positions[start_seed], expected)
+
+        info = {
+            "overall": {
+                "pc_success": 0.0,
+                "avg_sum_reward": 0.0,
+                "avg_max_reward": 0.0,
+            },
+            "per_task": [
+                {
+                    "metrics": {
+                        "successes": [False],
+                        "max_rewards": [0.0],
+                        "sum_rewards": [0.0],
+                        "seeds": [start_seed],
+                    }
+                }
+            ],
+        }
+        rows = per_episode_rows(info, start_seed)
+        attach_cube_positions(rows, inner)
+        per_spot = spot_success_rows(rows)
+        info["per_episode"] = rows
+        info["per_spot"] = per_spot
+        self.assertIn("success", format_spot_report(per_spot))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_eval_info(Path(tmp), info)
+            written = json.loads(path.read_text())
+        self.assertEqual(len(written["per_episode"]), 1)
+        episode = written["per_episode"][0]
+        self.assertEqual(episode["seed"], start_seed)
+        self.assertEqual(episode["cube_x"], expected[0])
+        self.assertEqual(episode["cube_y"], expected[1])
+        self.assertEqual(written["per_spot"][0]["episodes"], 1)
+        self.assertEqual(written["per_spot"][0]["successes"], 0)
 
 
 if __name__ == "__main__":

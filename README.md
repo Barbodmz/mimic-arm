@@ -230,7 +230,7 @@ Training demos are the other 203 reachable spots. `demo_sets/wider_spawn_spots.p
 
 `train.py` still defaults to the published dataset. Wider demos are used only when you pass `--dataset.repo_id` and `--dataset.root` for a set recorded with `--wider-spawn`.
 
-`--cube-range holdout-scattered` walks the 108 shifted positions in file order. Seed `s` uses position `s mod 108`, so `--episodes 108` covers each shift once. Omitting `--episodes` uses that same count. `--cube-range holdout-far-y` still walks the three reachable corner spots; a 50-episode run cycles them. `--cube-range outside` is unchanged and stays the comparison run. The 70% bar belongs on the two holdout runs. The outside-band run places cubes inside the wider training area, so it is a comparison number.
+`--cube-range holdout-scattered` walks the 108 shifted positions in file order. Seed `s` uses position `s mod 108`, so `--episodes 108` covers each shift once. Omitting `--episodes` uses that same count. `--cube-range holdout-far-y` walks the three reachable corner spots. Omitting `--episodes` runs one episode per spot (3). A longer run cycles those three. Either holdout run prints a per-spot success count (`successes/episodes` for each cube). `--cube-range outside` is unchanged and stays the comparison run. The 70% bar belongs on the two holdout runs. The outside-band run places cubes inside the wider training area, so it is a comparison number.
 
 Permanent weights from `train.py` land in `checkpoints/weights/<step>/pretrained_model`. The step folder is zero-padded to at least six digits (`050000`, `100000`) when the finish line is 100,000 or 50,000. `checkpoints/recovery/pretrained_model` is only the latest step, so a 50k snapshot has to be the weights folder.
 
@@ -241,7 +241,7 @@ python record_scripted_demos.py --write-holdouts
 python record_scripted_demos.py --write-shifts
 ```
 
-Laptop commands. `--steps 100000` with `--weights-every 10000` writes `weights/050000` on the way to `weights/100000`. Scattered eval is 108 episodes, one per shift. Far-Y and the outside comparison stay at 50. Seed 1000.
+Laptop commands. `--steps 100000` with `--weights-every 10000` writes `weights/050000` on the way to `weights/100000`. Scattered eval is 108 episodes, one per shift. Far-Y is 3 episodes, one per listed spot. The outside comparison stays at 50. Seed 1000. A flag-off recording still uses the stock weld and skips any demo that misses reward 4, then prints attempted versus saved.
 
 ```bash
 python record_scripted_demos.py --wider-spawn --output-dir outputs/data/scripted_wide
@@ -262,7 +262,7 @@ python evaluate.py \
 
 python evaluate.py \
     --checkpoint outputs/train/act_scripted_wide/checkpoints/weights/050000/pretrained_model \
-    --episodes 50 --seed 1000 --device cuda \
+    --episodes 3 --seed 1000 --device cuda \
     --cube-range holdout-far-y \
     --output-dir outputs/eval/scripted_wide_50k_holdout_far_y
 
@@ -281,7 +281,7 @@ python evaluate.py \
 
 python evaluate.py \
     --checkpoint outputs/train/act_scripted_wide/checkpoints/weights/100000/pretrained_model \
-    --episodes 50 --seed 1000 --device cuda \
+    --episodes 3 --seed 1000 --device cuda \
     --cube-range holdout-far-y \
     --output-dir outputs/eval/scripted_wide_100k_holdout_far_y
 

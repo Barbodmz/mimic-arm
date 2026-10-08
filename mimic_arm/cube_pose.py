@@ -78,9 +78,10 @@ def sample_transfer_cube_pose(
 class ListedCubeSampler:
     """Drop-in ``sample_box_pose`` that walks a fixed list of spots.
 
-    Episode seed ``s`` uses ``spots[s % len(spots)]``, so a 50-episode eval
-    cycles a shorter holdout list and every run with the same seed sees the
-    same cubes.
+    Episode seed ``s`` uses ``spots[s % len(spots)]``, so a longer eval cycles
+    a shorter holdout list and every run with the same seed sees the same
+    cubes. A reset with no seed, which the vector env uses to autoreset at
+    the end of an episode, returns a listed pose and does not record it.
     """
 
     def __init__(self, spots: list[tuple[float, float]], *, source: str) -> None:
@@ -99,7 +100,11 @@ class ListedCubeSampler:
     def __call__(self, seed=None) -> np.ndarray:
         key = _as_seed(seed)
         if key is None:
-            raise ValueError("A holdout cube sampler needs a seed.")
+            # gym's vector env calls reset() with no seed when it autoresets
+            # at the end of an episode. Recording that call would not match
+            # an episode seed, so the pose is not stored.
+            x, y = self.spots[0]
+            return np.array([x, y, CUBE_Z, *CUBE_QUAT], dtype=np.float64)
         x, y = self.spots[key % len(self.spots)]
         self.positions[key] = (x, y)
         return np.array([x, y, CUBE_Z, *CUBE_QUAT], dtype=np.float64)

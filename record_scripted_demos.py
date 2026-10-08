@@ -5,9 +5,12 @@ With no extra flags this follows gym-aloha's training box and
 ``sample_box_pose(seed + episode)``, and the mocap weld stays at the stock
 setting. ``--wider-spawn`` records the training list in
 ``demo_sets/wider_spawn_holdouts.json``. The end-effector teacher uses a
-higher mocap impedance so the gripper tracks the waypoint; each demo is kept
-only when the joint replay succeeds in the stock eval env. Held-out spots are
-never recorded.
+higher mocap impedance so the gripper tracks the waypoint. A demo is saved
+only when the joint replay reaches reward 4 in the stock eval env. With the
+flag off the weld stays at the stock setting and a miss is skipped. With
+``--wider-spawn`` a miss stops the recording. The run prints how many
+episodes were attempted and how many were saved. Held-out spots are never
+recorded.
 
 ``--write-holdouts`` rebuilds that JSON (and the spot plot) by rolling the
 scripted policy on the 2 cm grid. It does not record a dataset.
@@ -91,9 +94,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            f"How many episodes to record. Default {DEFAULT_EPISODES} with the flag off, "
+            f"How many episodes to attempt. Default {DEFAULT_EPISODES} with the flag off, "
             "or every training spot with --wider-spawn. A shorter wider run records "
-            "a prefix of that list."
+            "a prefix of that list. A demo that misses reward 4 is not saved."
         ),
     )
     parser.add_argument(
@@ -289,6 +292,56 @@ def _write_positions(path: Path, rows: list[dict]) -> None:
     path.write_text(json.dumps(rows, indent=2) + "\n")
 
 
+def open_dataset(repo_id: str, output_dir: Path):
+    """Create an empty LeRobot dataset at ``output_dir``."""
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    return LeRobotDataset.create(
+        repo_id=repo_id,
+        fps=50,
+        features=dataset_features(),
+        root=output_dir,
+        robot_type="aloha",
+        use_videos=True,
+    )
+
+
+def roll_one(pose: np.ndarray, *, stiff_weld: bool) -> dict:
+    """One scripted rollout. ``stiff_weld`` is only for the wider teacher."""
+    from mimic_arm.scripted_rollout import rollout_scripted
+
+    return rollout_scripted(pose, stiff_weld=stiff_weld, render_top=True)
+
+
+def _store_episode(dataset, frames, episode_index: int) -> None:
+    if len(frames) != 400:
+        raise RuntimeError(f"Episode {episode_index} has {len(frames)} frames; expected 400.")
+    for frame in frames:
+        image = frame["image"]
+        if getattr(image, "shape", None) != (480, 640, 3):
+            raise RuntimeError(f"Top camera frame shape is {getattr(image, 'shape', None)}.")
+        dataset.add_frame(
+            {
+                "observation.images.top": image,
+                "observation.state": frame["state"],
+                "action": frame["action"],
+                "task": TASK,
+            }
+        )
+    dataset.save_episode()
+
+
+def _finalize_dataset(dataset) -> None:
+    """Call ``finalize`` without replacing an error from the recording loop."""
+    pending = sys.exception()
+    try:
+        dataset.finalize()
+    except Exception:
+        if pending is not None:
+            raise pending
+        raise
+
+
 def record_demos(
     *,
     wider_spawn: bool,
@@ -297,7 +350,7 @@ def record_demos(
     output_dir: Path,
     repo_id: str,
 ) -> Path:
-    """Write a LeRobot dataset. Each episode is saved before the next one starts."""
+    """Write a LeRobot dataset. Each kept episode is saved before the next one starts."""
     from mimic_arm.mujoco_gl import configure_mujoco_rendering
 
     configure_mujoco_rendering()
@@ -310,71 +363,57 @@ def record_demos(
             f"{output_dir} already exists. Pick a new --output-dir so an earlier dataset stays put."
         )
 
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
-
-    from mimic_arm.scripted_rollout import rollout_scripted
-
     output_dir.parent.mkdir(parents=True, exist_ok=True)
-    dataset = LeRobotDataset.create(
-        repo_id=repo_id,
-        fps=50,
-        features=dataset_features(),
-        root=output_dir,
-        robot_type="aloha",
-        use_videos=True,
-    )
+    dataset = open_dataset(repo_id, output_dir)
     positions_path = output_dir / "cube_positions.json"
     positions: list[dict] = []
     print(
         f"Recording {count} episodes  wider_spawn={wider_spawn}  "
         f"repo_id={repo_id}  output={output_dir}"
     )
+    attempted = 0
+    saved = 0
     try:
         for index in range(count):
+            attempted += 1
             pose = demo_cube_pose(index, wider_spawn=wider_spawn, seed=seed)
-            result = rollout_scripted(pose, stiff_weld=wider_spawn, render_top=True)
-            if wider_spawn and not result["success"]:
-                x, y = float(pose[0]), float(pose[1])
-                raise RuntimeError(
-                    f"Training spot ({x}, {y}) did not finish the handover "
-                    f"(joint reward {result['joint_reward']}). "
-                    "It was left out of the dataset."
+            result = roll_one(pose, stiff_weld=wider_spawn)
+            x, y = float(pose[0]), float(pose[1])
+            if not result["success"]:
+                if wider_spawn:
+                    raise RuntimeError(
+                        f"Training spot ({x}, {y}) did not finish the handover "
+                        f"(joint reward {result['joint_reward']}). "
+                        "It was left out of the dataset."
+                    )
+                print(
+                    f"episode {index:03d}  cube ({x:.3f}, {y:.3f})  "
+                    f"reward {result['joint_reward']}  not saved",
+                    flush=True,
                 )
-            frames = result["frames"]
-            if len(frames) != 400:
-                raise RuntimeError(f"Episode {index} has {len(frames)} frames; expected 400.")
-            for frame in frames:
-                image = frame["image"]
-                if getattr(image, "shape", None) != (480, 640, 3):
-                    raise RuntimeError(f"Top camera frame shape is {getattr(image, 'shape', None)}.")
-                dataset.add_frame(
-                    {
-                        "observation.images.top": image,
-                        "observation.state": frame["state"],
-                        "action": frame["action"],
-                        "task": TASK,
-                    }
-                )
-            dataset.save_episode()
+                continue
+            _store_episode(dataset, result["frames"], index)
             positions.append(
                 {
-                    "episode": index,
+                    "episode": saved,
+                    "attempt": index,
                     "seed": None if wider_spawn else int(seed) + index,
-                    "x": float(pose[0]),
-                    "y": float(pose[1]),
+                    "x": x,
+                    "y": y,
                     "joint_reward": int(result["joint_reward"]),
-                    "success": bool(result["success"]),
+                    "success": True,
                 }
             )
+            saved += 1
             _write_positions(positions_path, positions)
             print(
-                f"episode {index:03d}  cube ({pose[0]:.3f}, {pose[1]:.3f})  "
+                f"episode {index:03d}  cube ({x:.3f}, {y:.3f})  "
                 f"reward {result['joint_reward']}",
                 flush=True,
             )
     finally:
-        dataset.finalize()
-    print(f"Wrote {count} episodes to {output_dir}")
+        print(f"Attempted {attempted} episodes, saved {saved}.")
+        _finalize_dataset(dataset)
     return output_dir
 
 

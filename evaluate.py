@@ -177,6 +177,60 @@ def format_stage_report(table: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def attach_cube_positions(rows: list[dict], sampler) -> None:
+    """Copy each episode's recorded cube onto its row.
+
+    The seed stored for the episode is the one ``eval_policy`` passed to
+    ``reset``. Autoreset calls are not in ``sampler.positions``.
+    """
+    if sampler is None:
+        return
+    for row in rows:
+        position = sampler.positions.get(row["seed"])
+        if position is None:
+            raise RuntimeError(
+                f"No cube position was recorded for episode seed {row['seed']}."
+            )
+        row["cube_x"], row["cube_y"] = position
+
+
+def spot_success_rows(rows: list[dict]) -> list[dict]:
+    """Success count for each cube position, in the order spots first appear."""
+    order: list[tuple[float, float]] = []
+    stats: dict[tuple[float, float], dict] = {}
+    for row in rows:
+        if "cube_x" not in row:
+            continue
+        key = (float(row["cube_x"]), float(row["cube_y"]))
+        bucket = stats.get(key)
+        if bucket is None:
+            order.append(key)
+            bucket = {"x": key[0], "y": key[1], "episodes": 0, "successes": 0}
+            stats[key] = bucket
+        bucket["episodes"] += 1
+        if row["success"]:
+            bucket["successes"] += 1
+    return [stats[key] for key in order]
+
+
+def format_spot_report(table: list[dict]) -> str:
+    lines = ["Per spot:"]
+    for row in table:
+        lines.append(
+            f"  ({row['x']:.5f}, {row['y']:.5f}): "
+            f"{row['successes']}/{row['episodes']} success"
+        )
+    return "\n".join(lines)
+
+
+def write_eval_info(output_dir: Path, info: dict) -> Path:
+    """Write ``eval_info.json`` under ``output_dir``."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    info_path = output_dir / "eval_info.json"
+    info_path.write_text(json.dumps(info, indent=2, default=_json_ready))
+    return info_path
+
+
 def failure_video_name(row: dict) -> str:
     """File name for one episode video, for example ``episode_07_fail_maxreward1.mp4``."""
     episode = f"{row['episode']:02d}"
@@ -242,8 +296,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "How many simulated episodes to run. Default: 20, or one per "
-            "shifted scattered-holdout position when --cube-range is holdout-scattered."
+            "How many simulated episodes to run. Default: 20, or one episode "
+            "per listed spot for holdout-scattered and holdout-far-y."
         ),
     )
     parser.add_argument(
@@ -310,7 +364,8 @@ def add_eval_variant_args(parser: argparse.ArgumentParser) -> None:
             "(the original unseen-position comparison). 'holdout-scattered' walks "
             "the shifted positions in demo_sets/wider_spawn_holdouts.json, one "
             "episode per position when --episodes is omitted. 'holdout-far-y' "
-            "walks the far-Y corner. Seed s uses list index s mod length."
+            "walks the far-Y corner, one episode per listed spot when "
+            "--episodes is omitted. Seed s uses list index s mod length."
         ),
     )
     parser.add_argument(
@@ -509,14 +564,8 @@ def evaluate_checkpoint(
             f"Expected {episodes} per-episode results, got {len(rows)}."
         )
     stages = stage_table(rows)
-    if sampler is not None:
-        for row in rows:
-            position = sampler.positions.get(row["seed"])
-            if position is None:
-                raise RuntimeError(
-                    f"No cube position was recorded for episode seed {row['seed']}."
-                )
-            row["cube_x"], row["cube_y"] = position
+    attach_cube_positions(rows, sampler)
+    per_spot = spot_success_rows(rows) if getattr(sampler, "spot_count", None) else []
 
     if save_failures:
         video_paths = organize_failure_videos(videos_dir, rows)
@@ -525,6 +574,8 @@ def evaluate_checkpoint(
 
     overall["video_paths"] = video_paths
     info["per_episode"] = rows
+    if per_spot:
+        info["per_spot"] = per_spot
     info["failure_stage_counts"] = stages
     if temporal_ensemble is not None:
         info["temporal_ensemble_coeff"] = float(temporal_ensemble)
@@ -532,8 +583,7 @@ def evaluate_checkpoint(
     if cube_record is not None:
         info["cube_sampling"] = cube_record
 
-    info_path = output_dir / "eval_info.json"
-    info_path.write_text(json.dumps(info, indent=2, default=_json_ready))
+    info_path = write_eval_info(output_dir, info)
 
     success_rate = float(overall["pc_success"])
     avg_reward = float(overall["avg_sum_reward"])
@@ -551,6 +601,9 @@ def evaluate_checkpoint(
     for row in rows:
         print(f"  {format_episode_line(row)}")
     print()
+    if per_spot:
+        print(format_spot_report(per_spot))
+        print()
     print(format_stage_report(stages))
     if video_paths:
         print("Videos:")
@@ -580,13 +633,13 @@ def evaluate_checkpoint(
 def resolve_episode_count(episodes: int | None, cube_range: str) -> int:
     """Episode count for one eval run.
 
-    Scattered holdout eval walks the saved shifts once when ``--episodes``
-    is omitted. Every other mode stays at 20.
+    Holdout modes walk their saved lists once when ``--episodes`` is omitted.
+    Every other mode stays at 20.
     """
     if episodes is not None:
         return episodes
-    if cube_range == "holdout-scattered":
-        return len(holdout_spots("holdout-scattered"))
+    if cube_range in ("holdout-scattered", "holdout-far-y"):
+        return len(holdout_spots(cube_range))
     return 20
 
 
