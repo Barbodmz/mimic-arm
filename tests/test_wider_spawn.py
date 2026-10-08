@@ -135,13 +135,20 @@ class WiderSpawnTest(unittest.TestCase):
         self.assertEqual(plan.raw["seed"], HOLDOUT_SEED)
         self.assertEqual(plan.raw["holdout_fraction"], HOLDOUT_FRACTION)
         self.assertEqual(plan.raw["candidate_count"], 256)
-        self.assertEqual(plan.raw["reachable_count"], 86)
-        self.assertEqual(plan.raw["rejected_count"], 170)
-        self.assertEqual(plan.raw["joint_only_rejected_count"], 42)
-        self.assertEqual(plan.raw["outside_band_reachable_count"], 38)
-        self.assertEqual(plan.raw["scattered_count"], 13)
-        self.assertEqual(plan.raw["far_y_corner_count"], 9)
-        self.assertEqual(plan.raw["training_count"], 73)
+        self.assertEqual(plan.raw["reachable_count"], 242)
+        self.assertEqual(plan.raw["rejected_count"], 14)
+        self.assertEqual(plan.raw["joint_only_count"], 0)
+        self.assertEqual(plan.raw["in_box_candidate_count"], 100)
+        self.assertEqual(plan.raw["in_box_reachable_count"], 100)
+        self.assertEqual(plan.raw["outside_band_reachable_count"], 142)
+        self.assertEqual(plan.raw["scattered_count"], 36)
+        self.assertEqual(plan.raw["far_y_corner_count"], 3)
+        self.assertEqual(plan.raw["far_y_corner_unreachable_count"], 6)
+        self.assertEqual(plan.raw["training_count"], 203)
+        self.assertEqual(
+            [tuple(spot) for spot in plan.raw["far_y_corner"]],
+            [(0.21, 0.61), (0.21, 0.63), (0.23, 0.61)],
+        )
         self.assertEqual(plan.raw["wider_x"], list(OUTSIDE_X_RANGE))
         self.assertEqual(plan.raw["wider_y"], list(OUTSIDE_Y_RANGE))
         self.assertGreater(plan.raw["rejected_count"], 0)
@@ -154,6 +161,7 @@ class WiderSpawnTest(unittest.TestCase):
     def test_no_held_out_spot_leaks_into_training_demos(self) -> None:
         plan = load_spawn_plan(HOLDOUTS_PATH)
         holdouts = list(plan.scattered) + list(plan.far_y_corner)
+        holdouts += [tuple(spot) for spot in plan.raw["far_y_corner_unreachable"]]
         training = list(plan.training)
         self.assertGreater(len(training) * len(holdouts), 100)
         self.assertEqual(leak_pairs(training, holdouts, LEAK_TOLERANCE_M), [])
@@ -231,6 +239,18 @@ class WiderSpawnTest(unittest.TestCase):
             )
             np.testing.assert_array_equal(pose, direct)
             self.assertFalse(in_default_box(float(pose[0]), float(pose[1])))
+
+    def test_in_box_grid_clears_the_sanity_gate(self) -> None:
+        try:
+            import gym_aloha  # noqa: F401
+        except ImportError:
+            self.skipTest("gym_aloha is not installed")
+        from mimic_arm.scripted_rollout import scripted_success
+
+        inbox = [spot for spot in candidate_spots() if in_default_box(*spot)]
+        self.assertEqual(len(inbox), 100)
+        passed = sum(1 for x, y in inbox if scripted_success(x, y, stiff_weld=True))
+        self.assertGreaterEqual(passed, 95)
 
     def test_scripted_rollout_on_known_spots(self) -> None:
         try:

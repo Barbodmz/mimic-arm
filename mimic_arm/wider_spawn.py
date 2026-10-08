@@ -52,12 +52,13 @@ LEAK_TOLERANCE_M = 0.005
 FAR_Y_CORNER_X = (0.2, 0.25)
 FAR_Y_CORNER_Y = (0.6, 0.65)
 
-# Stock gym-aloha weld leaves the gripper about 7 cm short of the scripted
-# mocap target, so the policy only finishes in a narrow band. These stiffer
-# constraint values make the same waypoints track. The wider-spawn recorder
-# and the reachability survey use them. The flag-off recorder does not.
+# MuJoCo 3 leaves the stock solimp (0.25) about 7 cm short of the scripted
+# waypoint, so the right gripper misses most of the original training box.
+# The time constant stays 0.01. Only the impedance is raised, and only while
+# the end-effector teacher is recording. Reachability is the joint replay in
+# the stock joint-position env, which has no mocap weld.
 STIFF_WELD_FROM = 'solref="0.01 1" solimp=".25 .25 0.001"'
-STIFF_WELD_TO = 'solref="0.004 1" solimp="0.95 0.99 0.001"'
+STIFF_WELD_TO = 'solref="0.01 1" solimp="0.95 0.99 0.001"'
 
 
 def in_far_y_corner(x: float, y: float) -> bool:
@@ -91,14 +92,19 @@ def assign_holdouts(
 
     The scattered draw is ``round(fraction * reachable)`` spots, taken from
     the reachable spots that are not already in the far-Y corner. The corner
-    list itself is every grid point in that square, reachable or not, so the
-    eval can still place a cube there.
+    eval list is the reachable grid points in that square. Unreachable corner
+    points stay out of training and out of eval.
     """
     if not 0.0 < fraction < 1.0:
         raise ValueError(f"holdout fraction must be between 0 and 1, got {fraction}.")
     reachable_pairs = _as_pairs(reachable)
-    corner = [spot for spot in candidate_spots() if in_far_y_corner(*spot)]
-    corner_set = set(corner)
+    # The corner bounds stay fixed. Eval only lists the corner spots the
+    # teacher can finish; the rest of that square is recorded separately.
+    corner_grid = [spot for spot in candidate_spots() if in_far_y_corner(*spot)]
+    corner_set = set(corner_grid)
+    reachable_set = set(reachable_pairs)
+    corner = [spot for spot in corner_grid if spot in reachable_set]
+    corner_unreachable = [spot for spot in corner_grid if spot not in reachable_set]
     eligible = [spot for spot in reachable_pairs if spot not in corner_set]
     count = int(round(fraction * len(reachable_pairs)))
     if count > len(eligible):
@@ -118,6 +124,8 @@ def assign_holdouts(
         "reachable": reachable_pairs,
         "scattered": scattered,
         "far_y_corner": corner,
+        "far_y_corner_unreachable": corner_unreachable,
+        "far_y_corner_grid": corner_grid,
         "training": training,
     }
 
@@ -197,6 +205,8 @@ def build_plan_payload(
     rejected = [spot for spot in candidates if spot not in reachable_set]
     outside_reachable = [spot for spot in assigned["reachable"] if not in_default_box(*spot)]
     outside_rejected = [spot for spot in rejected if not in_default_box(*spot)]
+    in_box_candidates = [spot for spot in candidates if in_default_box(*spot)]
+    in_box_reachable = [spot for spot in assigned["reachable"] if in_default_box(*spot)]
     return {
         "description": (
             "Scripted-demo cube spots for the wider spawn. Training demos use "
@@ -224,14 +234,14 @@ def build_plan_payload(
         },
         "reachability": {
             "method": (
-                "PickAndTransferPolicy must finish the handover in both sims: "
-                "reward 4 in the end-effector sim, and reward 4 when those "
-                "joint positions are replayed. The mocap weld is stiffened "
-                "from solref 0.01 / solimp 0.25 to solref 0.004 / solimp "
-                "0.95 0.99 so the gripper tracks the scripted waypoint. The "
-                "stock weld leaves it about 7 cm short. A joint replay that "
-                "reaches reward 4 while the end-effector policy is still at "
-                "reward 2 is rejected."
+                "The scripted PickAndTransferPolicy is recorded in the "
+                "end-effector sim with the stock solref (0.01) and a higher "
+                "weld impedance (solimp 0.95 0.99). A spot is reachable when "
+                "replaying those joint positions in the stock joint-position "
+                "env reaches reward 4. That env is the eval sim and its weld "
+                "is untouched. The stock solimp 0.25 leaves the right gripper "
+                "about 7 cm short under MuJoCo 3, which rejects the right half "
+                "of the original training box."
             ),
             "weld": STIFF_WELD_TO,
             "success_reward": 4,
@@ -239,16 +249,20 @@ def build_plan_payload(
         "candidate_count": len(candidates),
         "reachable_count": len(assigned["reachable"]),
         "rejected_count": len(rejected),
-        "joint_only_rejected_count": joint_only_count,
+        "joint_only_count": joint_only_count,
+        "in_box_candidate_count": len(in_box_candidates),
+        "in_box_reachable_count": len(in_box_reachable),
         "outside_band_reachable_count": len(outside_reachable),
         "outside_band_rejected_count": len(outside_rejected),
         "scattered_count": len(assigned["scattered"]),
         "far_y_corner_count": len(assigned["far_y_corner"]),
+        "far_y_corner_unreachable_count": len(assigned["far_y_corner_unreachable"]),
         "training_count": len(assigned["training"]),
         "reachable": [list(spot) for spot in assigned["reachable"]],
         "rejected": [list(spot) for spot in rejected],
         "scattered_holdout": [list(spot) for spot in assigned["scattered"]],
         "far_y_corner": [list(spot) for spot in assigned["far_y_corner"]],
+        "far_y_corner_unreachable": [list(spot) for spot in assigned["far_y_corner_unreachable"]],
         "training": [list(spot) for spot in assigned["training"]],
     }
 

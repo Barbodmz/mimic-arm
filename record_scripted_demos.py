@@ -4,9 +4,10 @@
 With no extra flags this follows gym-aloha's training box and
 ``sample_box_pose(seed + episode)``, and the mocap weld stays at the stock
 setting. ``--wider-spawn`` records the training list in
-``demo_sets/wider_spawn_holdouts.json`` and stiffens that weld so the scripted
-handover can finish in the 5 cm band around the box. Held-out spots are never
-recorded.
+``demo_sets/wider_spawn_holdouts.json``. The end-effector teacher uses a
+higher mocap impedance so the gripper tracks the waypoint; each demo is kept
+only when the joint replay succeeds in the stock eval env. Held-out spots are
+never recorded.
 
 ``--write-holdouts`` rebuilds that JSON (and the spot plot) by rolling the
 scripted policy on the 2 cm grid. It does not record a dataset.
@@ -184,8 +185,10 @@ def write_holdouts() -> dict:
         f"reachable {payload['reachable_count']}  "
         f"rejected {payload['rejected_count']}  "
         f"outside reachable {payload['outside_band_reachable_count']}  "
+        f"in-box {payload['in_box_reachable_count']}/{payload['in_box_candidate_count']}  "
         f"scattered {payload['scattered_count']}  "
         f"far-Y {payload['far_y_corner_count']}  "
+        f"far-Y unreachable {payload['far_y_corner_unreachable_count']}  "
         f"training {payload['training_count']}"
     )
     return payload

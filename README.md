@@ -219,14 +219,16 @@ python evaluate.py \
 
 `record_scripted_demos.py` records the scripted pick-and-handover. With no extra flags it uses gym-aloha's box, `sample_box_pose(seed + episode)`, and the stock mocap weld. `--wider-spawn` records the training list in `demo_sets/wider_spawn_holdouts.json`.
 
-The wider rectangle is the training box plus the same 5 cm band as `--cube-range outside`: x from -0.05 to 0.25, y from 0.35 to 0.65. A 2 cm grid over that rectangle has 256 spots. A spot is kept when the scripted policy finishes the handover in the end-effector sim (reward 4) and the joint replay does too. The survey stiffens the mocap weld (`solref 0.004`, `solimp 0.95 0.99`) so the gripper can track the waypoint; the stock weld leaves it about 7 cm short. 86 spots passed, 170 were rejected. 42 of the rejected spots reached reward 4 only in the joint replay, with the end-effector policy still at reward 2, and those stayed out. 38 of the 86 reachable spots sit in the outside band.
+The wider rectangle is the training box plus the same 5 cm band as `--cube-range outside`: x from -0.05 to 0.25, y from 0.35 to 0.65. A 2 cm grid over that rectangle has 256 spots. A spot is kept when the joint-space replay of the scripted handover reaches reward 4 in the stock joint-position env, which is the env ACT is scored in. Under MuJoCo 3 the stock mocap impedance (`solimp 0.25`) leaves the right gripper about 7 cm short of the waypoint, so that teacher misses most of the original box, including the right half. The recorder keeps `solref 0.01` and raises the impedance to `solimp 0.95 0.99` only while driving the end-effector teacher. The replay env is unchanged. With that teacher, all 100 grid spots inside the original box succeed, and 242 of 256 wider-grid spots succeed. 142 of those are in the outside band. 14 spots are rejected, all on the high-X edge of the frame. Every kept spot also reached reward 4 in the end-effector sim, so the stock-env replay rate on the reachable set is 242/242.
 
 Two groups stay out of the training demos:
 
-- Scattered holdout: 13 spots, `round(0.15 * 86)`, drawn with `numpy.random.RandomState(14)` from the reachable spots. The list is `scattered_holdout` in the JSON file.
-- Far-Y corner: the whole high-X, high-Y 5 cm square of the outside band, x in (0.2, 0.25] and y in (0.6, 0.65]. That is 9 grid points (`0.21/0.23/0.25` by `0.61/0.63/0.65`). The in-range misses on seeds 1024, 1038, 1047, and 1049 sat at about x 0.130–0.161 and y 0.569–0.599, on the way into this square. None of these 9 spots passed the reachability filter, so the corner eval is past what the scripted teacher can demonstrate.
+- Scattered holdout: 36 spots, `round(0.15 * 242)`, drawn with `numpy.random.RandomState(14)` from the reachable spots outside the far-Y corner. The list is `scattered_holdout` in the JSON file.
+- Far-Y corner: the same high-X, high-Y square as before, x in (0.2, 0.25] and y in (0.6, 0.65] (9 grid points). Three of them pass the stock replay and are the corner eval: (0.21, 0.61), (0.21, 0.63), (0.23, 0.61). The other six, (0.21, 0.65), (0.23, 0.63), (0.23, 0.65), (0.25, 0.61), (0.25, 0.63), and (0.25, 0.65), fail it, so they are in neither training nor eval. The bounds are unchanged.
 
-Training demos are the other 73 reachable spots. `demo_sets/wider_spawn_spots.png` plots training spots, the scattered holdout, the far-Y corner, and the rejected grid.
+Training demos are the other 203 reachable spots. `demo_sets/wider_spawn_spots.png` plots training spots, the scattered holdout, the reachable far-Y corner, and the rejected grid.
+
+`train.py` still defaults to the published dataset. Wider demos are used only when you pass `--dataset.repo_id` and `--dataset.root` for a set recorded with `--wider-spawn`.
 
 `--cube-range holdout-scattered` and `--cube-range holdout-far-y` each walk one of those lists. Seed `s` uses spot `s mod length`, so a 50-episode run cycles the list. `--cube-range outside` is unchanged and stays the comparison run. The 70% bar belongs on the two holdout runs. The outside-band run places cubes inside the wider training area, so it is a comparison number.
 

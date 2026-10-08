@@ -211,13 +211,12 @@ def rollout_scripted(
             if render_top:
                 frame["image"] = np.asarray(state.observation["images"]["top"]).copy()
             frames.append(frame)
-        # Both sims have to finish the handover. The joint replay can report
-        # reward 4 on a spot where the end-effector policy only lifted the cube
-        # (reward 2). That replay is not the scripted pick-and-handover.
+        # The saved demo is the joint trajectory. It counts only when that
+        # replay reaches reward 4 in the stock joint-position env.
         return {
             "ee_reward": ee_reward,
             "joint_reward": joint_reward,
-            "success": ee_reward >= SUCCESS_REWARD and joint_reward >= SUCCESS_REWARD,
+            "success": joint_reward >= SUCCESS_REWARD,
             "frames": frames,
             "pose": pose.copy(),
         }
@@ -239,11 +238,12 @@ def scripted_success(x: float, y: float, *, stiff_weld: bool = True) -> bool:
 
 
 def survey_reachable_spots() -> list[tuple[float, float]]:
-    """Every wider-grid spot where the stiffened scripted policy finishes.
+    """Wider-grid spots whose joint replay succeeds in the stock eval env.
 
-    A spot is reachable when the end-effector policy and the joint replay
-    both reach reward 4. Joint-only successes are counted in the progress
-    line and left out of the returned list.
+    The teacher runs with the higher-impedance mocap weld. ``last_joint_only``
+    counts spots where that replay succeeded and the end-effector reward
+    stayed below 4. Those spots stay in the returned list, because the
+    recorded demo is what the stock env scores.
     """
     from mimic_arm.wider_spawn import candidate_spots, pose_from_xy
 
@@ -254,12 +254,12 @@ def survey_reachable_spots() -> list[tuple[float, float]]:
         result = rollout_scripted(pose_from_xy(x, y), stiff_weld=True, render_top=False)
         if result["success"]:
             reachable.append((x, y))
-        elif result["joint_reward"] >= SUCCESS_REWARD and result["ee_reward"] < SUCCESS_REWARD:
-            joint_only += 1
+            if result["ee_reward"] < SUCCESS_REWARD:
+                joint_only += 1
         if index % 16 == 0 or index == len(spots):
             print(
                 f"reachability {index}/{len(spots)}  reachable {len(reachable)}  "
-                f"joint-only {joint_only}",
+                f"ee-short {joint_only}",
                 flush=True,
             )
     survey_reachable_spots.last_joint_only = joint_only
