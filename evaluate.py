@@ -56,6 +56,7 @@ if str(ROOT) not in sys.path:
 
 from mimic_arm.checkpoints import checkpoint_step, resolve_checkpoint
 from mimic_arm.cube_pose import cube_sampling_record, install_cube_sampler, resolve_cube_sampler
+from mimic_arm.wider_spawn import holdout_spots
 from mimic_arm.mujoco_gl import configure_mujoco_rendering
 
 ENV_TASK = "AlohaTransferCube-v0"
@@ -176,6 +177,60 @@ def format_stage_report(table: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def attach_cube_positions(rows: list[dict], sampler) -> None:
+    """Copy each episode's recorded cube onto its row.
+
+    The seed stored for the episode is the one ``eval_policy`` passed to
+    ``reset``. Autoreset calls are not in ``sampler.positions``.
+    """
+    if sampler is None:
+        return
+    for row in rows:
+        position = sampler.positions.get(row["seed"])
+        if position is None:
+            raise RuntimeError(
+                f"No cube position was recorded for episode seed {row['seed']}."
+            )
+        row["cube_x"], row["cube_y"] = position
+
+
+def spot_success_rows(rows: list[dict]) -> list[dict]:
+    """Success count for each cube position, in the order spots first appear."""
+    order: list[tuple[float, float]] = []
+    stats: dict[tuple[float, float], dict] = {}
+    for row in rows:
+        if "cube_x" not in row:
+            continue
+        key = (float(row["cube_x"]), float(row["cube_y"]))
+        bucket = stats.get(key)
+        if bucket is None:
+            order.append(key)
+            bucket = {"x": key[0], "y": key[1], "episodes": 0, "successes": 0}
+            stats[key] = bucket
+        bucket["episodes"] += 1
+        if row["success"]:
+            bucket["successes"] += 1
+    return [stats[key] for key in order]
+
+
+def format_spot_report(table: list[dict]) -> str:
+    lines = ["Per spot:"]
+    for row in table:
+        lines.append(
+            f"  ({row['x']:.5f}, {row['y']:.5f}): "
+            f"{row['successes']}/{row['episodes']} success"
+        )
+    return "\n".join(lines)
+
+
+def write_eval_info(output_dir: Path, info: dict) -> Path:
+    """Write ``eval_info.json`` under ``output_dir``."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    info_path = output_dir / "eval_info.json"
+    info_path.write_text(json.dumps(info, indent=2, default=_json_ready))
+    return info_path
+
+
 def failure_video_name(row: dict) -> str:
     """File name for one episode video, for example ``episode_07_fail_maxreward1.mp4``."""
     episode = f"{row['episode']:02d}"
@@ -239,8 +294,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--episodes",
         type=int,
-        default=20,
-        help="How many simulated episodes to run. Default: 20.",
+        default=None,
+        help=(
+            "How many simulated episodes to run. Default: 20, or one episode "
+            "per listed spot for holdout-scattered and holdout-far-y."
+        ),
     )
     parser.add_argument(
         "--videos",
@@ -298,11 +356,16 @@ def add_eval_variant_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--cube-range",
-        choices=("default", "outside"),
+        choices=("default", "outside", "holdout-scattered", "holdout-far-y"),
         default="default",
         help=(
             "Where the red cube starts. 'default' is gym-aloha's sample_box_pose "
-            "(x 0.0-0.2, y 0.4-0.6). 'outside' is a 5 cm frame around that rectangle."
+            "(x 0.0-0.2, y 0.4-0.6). 'outside' is a 5 cm frame around that rectangle "
+            "(the original unseen-position comparison). 'holdout-scattered' walks "
+            "the shifted positions in demo_sets/wider_spawn_holdouts.json, one "
+            "episode per position when --episodes is omitted. 'holdout-far-y' "
+            "walks the far-Y corner, one episode per listed spot when "
+            "--episodes is omitted. Seed s uses list index s mod length."
         ),
     )
     parser.add_argument(
@@ -400,15 +463,15 @@ def evaluate_checkpoint(
             "The ensembler resets at the start of each episode."
         )
     if cube_record is not None:
-        print(
+        line = (
             f"Cube positions: {cube_record['mode']}  "
             f"x {cube_record['x']}  y {cube_record['y']}"
-            + (
-                "  (training rectangle excluded)"
-                if cube_record["exclude_default"]
-                else ""
-            )
         )
+        if cube_record["exclude_default"]:
+            line += "  (training rectangle excluded)"
+        if cube_record.get("spot_count") is not None:
+            line += f"  ({cube_record['spot_count']} listed spots, {cube_record['source']})"
+        print(line)
 
     # Imports stay below the renderer setup. Importing lerobot pulls in
     # gym-aloha, which imports MuJoCo.
@@ -501,14 +564,8 @@ def evaluate_checkpoint(
             f"Expected {episodes} per-episode results, got {len(rows)}."
         )
     stages = stage_table(rows)
-    if sampler is not None:
-        for row in rows:
-            position = sampler.positions.get(row["seed"])
-            if position is None:
-                raise RuntimeError(
-                    f"No cube position was recorded for episode seed {row['seed']}."
-                )
-            row["cube_x"], row["cube_y"] = position
+    attach_cube_positions(rows, sampler)
+    per_spot = spot_success_rows(rows) if getattr(sampler, "spot_count", None) else []
 
     if save_failures:
         video_paths = organize_failure_videos(videos_dir, rows)
@@ -517,6 +574,8 @@ def evaluate_checkpoint(
 
     overall["video_paths"] = video_paths
     info["per_episode"] = rows
+    if per_spot:
+        info["per_spot"] = per_spot
     info["failure_stage_counts"] = stages
     if temporal_ensemble is not None:
         info["temporal_ensemble_coeff"] = float(temporal_ensemble)
@@ -524,8 +583,7 @@ def evaluate_checkpoint(
     if cube_record is not None:
         info["cube_sampling"] = cube_record
 
-    info_path = output_dir / "eval_info.json"
-    info_path.write_text(json.dumps(info, indent=2, default=_json_ready))
+    info_path = write_eval_info(output_dir, info)
 
     success_rate = float(overall["pc_success"])
     avg_reward = float(overall["avg_sum_reward"])
@@ -543,6 +601,9 @@ def evaluate_checkpoint(
     for row in rows:
         print(f"  {format_episode_line(row)}")
     print()
+    if per_spot:
+        print(format_spot_report(per_spot))
+        print()
     print(format_stage_report(stages))
     if video_paths:
         print("Videos:")
@@ -569,11 +630,24 @@ def evaluate_checkpoint(
     }
 
 
+def resolve_episode_count(episodes: int | None, cube_range: str) -> int:
+    """Episode count for one eval run.
+
+    Holdout modes walk their saved lists once when ``--episodes`` is omitted.
+    Every other mode stays at 20.
+    """
+    if episodes is not None:
+        return episodes
+    if cube_range in ("holdout-scattered", "holdout-far-y"):
+        return len(holdout_spots(cube_range))
+    return 20
+
+
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     evaluate_checkpoint(
         args.checkpoint,
-        episodes=args.episodes,
+        episodes=resolve_episode_count(args.episodes, args.cube_range),
         videos=args.videos,
         batch_size=args.batch_size,
         device=args.device,
